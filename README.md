@@ -49,13 +49,16 @@ upstream:
 ```bash
 omnicorn --config omnicorn.yaml
 ```
+
+- Also note that the execution time maybe higher than other servers, for me it didn't show any noticable differences (for now)
 ---
 
 ## What is on the way
 - WebSocket support
 - All other regular python webserver functionalities (dev server, hot reload)
+- Cache system and background workers system utilizing erlang/OTP ETS and process handling features.
 - Toolkit (set of decorators) that wraps python functions to supervise and manage them with OTP tools
-- Supervision tree hierachy resolver (So Python developer can use decorator where he need, and not think about that he wrapped outer function with totaly opposite behaviour.)
-- Intelligent (Not LLM) supervision based on situated AI and free energy principle. (This is the real experimental end goal, most probably wont make upto here.)
+- Supervision tree hierachy resolver (So Python developer can use decorators where he need, and not think about that he wrapped outer function with totaly opposite behaviour.)
+- Intelligent (Not LLM) supervision based on situated AI and free energy principle (or something more suitable). (This is the real experimental end goal, most probably wont make upto here.)
 
 ---
