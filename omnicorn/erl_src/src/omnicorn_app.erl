@@ -3,10 +3,9 @@
 -export([start/2, stop/1]).
 
 start(_StartType, _StartArgs) ->
-    %% 1. Configuration
     PortStr = os:getenv("OMNICORN_PORT", "8080"),
     WorkersStr = os:getenv("OMNICORN_WORKERS", "4"),
-    AppPath = os:getenv("OMNICORN_APP", "demo:app"),
+    AppPath = os:getenv("OMNICORN_APP", "demo:app"), %%placeholder demo
 
     Port = list_to_integer(PortStr),
     WorkerCount = list_to_integer(WorkersStr),
@@ -14,18 +13,21 @@ start(_StartType, _StartArgs) ->
     io:format("[Omnicorn] Starting Control Plane on Port ~p with ~p workers wrapping ~s~n",
               [Port, WorkerCount, AppPath]),
 
-    %% 2. Setup Cowboy Routes
+    %% Define Cowboy Routes: HTTP and WebSocket
     Dispatch = cowboy_router:compile([
-        {'_', [{"/[...]", omn_http, []}]}
+        {'_', [
+            %% HTTP route (matches everything not /ws)
+            {<<"/[...:rest]">>, omn_http, []},
+            %% WebSocket route (matches /ws or /ws/subpath)
+            {<<"/ws/[...:rest]">>, omn_http, [{websocket_handler, omn_ws_handler}]}
+        ]}
     ]),
 
-    %% 3. Start Cowboy Listener
     {ok, _} = cowboy:start_clear(http_listener,
         [{port, Port}],
         #{env => #{dispatch => Dispatch}}
     ),
 
-    %% 4. Start Supervision Tree
     omnicorn_sup:start_link(WorkerCount, AppPath).
 
 stop(_State) ->

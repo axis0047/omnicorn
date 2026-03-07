@@ -32,6 +32,8 @@ def main(app_path, config, workers, port):
         # NEW: Pass Resilience Settings
         'OMNICORN_MAX_RESTARTS': str(conf['workers']['max_restarts']),
         'OMNICORN_RESTART_PERIOD': str(conf['workers']['restart_period']),
+        # NEW: Parse socket address
+        'OMNICORN_SOCK': str(conf['server']["socket"]),
         'PYTHONPATH': os.getcwd() + os.pathsep + env.get('PYTHONPATH', '')
     })
 
