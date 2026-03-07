@@ -4,127 +4,130 @@
 
 -record(state, {
     req,
-    pid,                     % The Python worker PID
-    worker_id,               % ID of the Python worker
-    req_id,                  % Unique request ID for this WS connection
-    connection_state = #{}   % State carried to/from Python
+    pid,
+    worker_id,
+    req_id,
+    connection_state = #{}
 }).
 
+%% 1. INITIAL HANDSHAKE
 init(Req, _Opts) ->
-    %% FIX 1: Store Req in state so websocket_handle/2 can access it,
-    %% since Cowboy 2.x websocket callbacks no longer receive Req.
-    State = #state{req = Req},
-    {cowboy_websocket, Req, State}.
+    ReqId = erlang:phash2(erlang:make_ref()),
 
-websocket_init(State = #state{}) ->
-    io:format("[WS] Handshake successful for ~p~n", [State#state.req_id]),
+    %% Prepare Handshake Payload for Python
+    PythonPayload = #{
+        <<"scope_type">> => <<"websocket">>,
+        <<"id">>         => ReqId,
+        <<"path">>       => cowboy_req:path(Req),
+        <<"query">>      => cowboy_req:qs(Req),
+        <<"headers">>    => cowboy_req:headers(Req),
+        <<"scheme">>     => cowboy_req:scheme(Req),
+        <<"port">>       => cowboy_req:port(Req)
+    },
+
+    %% Ask a Python worker if we can accept this connection
+    case omn_router:checkout_worker() of
+        {ok, WorkerPid} ->
+            case omn_worker:call_python(WorkerPid, <<"websocket_handshake">>, PythonPayload) of
+                {ok, Resp} ->
+                    case maps:get(<<"websocket_handshake">>, Resp, <<"error">>) of
+                        <<"accept">> ->
+                            %% Success! Upgrade to WebSocket
+                            State = #state{
+                                req = Req,
+                                pid = WorkerPid,
+                                worker_id = WorkerPid,
+                                req_id = ReqId
+                            },
+                            %% Handle Subprotocol if present
+                            case maps:get(<<"subprotocol">>, Resp, undefined) of
+                                undefined ->
+                                    {cowboy_websocket, Req, State};
+                                SubProto ->
+                                    Req2 = cowboy_req:set_resp_header(<<"sec-websocket-protocol">>, SubProto, Req),
+                                    {cowboy_websocket, Req2, State}
+                            end;
+
+                        <<"close">> ->
+                            %% Python rejected it (e.g. 403 Forbidden)
+                            Code = maps:get(<<"code">>, Resp, 403),
+                            Req2 = cowboy_req:reply(Code, Req),
+                            {ok, Req2, undefined};
+
+                        _ ->
+                            Req2 = cowboy_req:reply(500, #{}, <<"Handshake Error">>, Req),
+                            {ok, Req2, undefined}
+                    end;
+                {error, _Reason} ->
+                     Req2 = cowboy_req:reply(502, #{}, <<"Worker Timeout/Error">>, Req),
+                     {ok, Req2, undefined}
+            end;
+        {error, empty} ->
+            Req2 = cowboy_req:reply(503, #{}, <<"No Workers Available">>, Req),
+            {ok, Req2, undefined}
+    end.
+
+websocket_init(State) ->
+    io:format("[WS] Connection ~p established~n", [State#state.req_id]),
     {ok, State}.
 
-%% FIX 2: Cowboy 2.x websocket_handle/2 takes (Frame, State) — no Req argument.
-websocket_handle({text, Data}, State = #state{req = Req, pid = PyPid, req_id = ReqId, connection_state = ConnState}) ->
-    PythonMsg = #{
-        <<"id">>      => ReqId,
-        <<"type">>    => <<"websocket_message">>,
-        <<"payload">> => #{
-            <<"path">>             => cowboy_req:path(Req),
-            <<"query">>            => cowboy_req:qs(Req),
-            <<"scheme">>           => cowboy_req:scheme(Req),
-            <<"port">>             => cowboy_req:port(Req),
-            <<"headers">>          => cowboy_req:headers(Req),
-            <<"message_type">>     => <<"text">>,
-            <<"content">>          => Data,
-            <<"client_info">>      => get_client_info(Req),
-            <<"connection_state">> => ConnState
-        }
-    },
-    handle_python_ws_response(PyPid, PythonMsg, ConnState, State);
-
-websocket_handle({binary, Data}, State = #state{req = Req, pid = PyPid, req_id = ReqId, connection_state = ConnState}) ->
-    PythonMsg = #{
-        <<"id">>      => ReqId,
-        <<"type">>    => <<"websocket_message">>,
-        <<"payload">> => #{
-            <<"path">>             => cowboy_req:path(Req),
-            <<"query">>            => cowboy_req:qs(Req),
-            <<"scheme">>           => cowboy_req:scheme(Req),
-            <<"port">>             => cowboy_req:port(Req),
-            <<"headers">>          => cowboy_req:headers(Req),
-            <<"message_type">>     => <<"binary">>,
-            <<"content">>          => Data,
-            <<"client_info">>      => get_client_info(Req),
-            <<"connection_state">> => ConnState
-        }
-    },
-    handle_python_ws_response(PyPid, PythonMsg, ConnState, State);
-
-websocket_handle(_Any, State) ->
+%% 2. HANDLE INCOMING FRAMES (From Client)
+websocket_handle({text, Data}, State) ->
+    forward_to_python(<<"text">>, Data, State);
+websocket_handle({binary, Data}, State) ->
+    forward_to_python(<<"binary">>, Data, State);
+websocket_handle(_Frame, State) ->
     {ok, State}.
 
-%% FIX 3: websocket_info/2 takes (Info, State) — no Req argument.
+%% 3. HANDLE MESSAGES FROM PYTHON (Via omn_worker)
+%% Currently, omn_worker calls us synchronously, but if we add async support later:
 websocket_info(_Info, State) ->
     {ok, State}.
 
-%% websocket_terminate/3 keeps (Reason, Req, State) — this signature is correct.
-websocket_terminate(Reason, _Req, State = #state{req = Req, pid = PyPid, req_id = ReqId, connection_state = ConnState}) ->
-    io:format("[WS] Connection ~p for worker ~p terminated. Reason: ~p~n",
-              [ReqId, State#state.worker_id, Reason]),
-
-    PythonMsg = #{
-        <<"id">>      => ReqId,
-        <<"type">>    => <<"websocket_disconnect">>,
+websocket_terminate(Reason, _Req, #state{pid=Pid, req_id=ReqId, connection_state=CS}) ->
+    %% Tell Python to clean up
+    Msg = #{
+        <<"id">> => ReqId,
+        <<"type">> => <<"websocket_disconnect">>,
         <<"payload">> => #{
-            <<"path">>             => cowboy_req:path(Req),
-            <<"query">>            => cowboy_req:qs(Req),
-            <<"scheme">>           => cowboy_req:scheme(Req),
-            <<"port">>             => cowboy_req:port(Req),
-            <<"headers">>          => cowboy_req:headers(Req),
-            <<"code">>             => get_close_code(Reason),
-            <<"client_info">>      => get_client_info(Req),
-            <<"connection_state">> => ConnState
+            <<"code">> => 1000,
+            <<"connection_state">> => CS
         }
     },
-    omn_worker:call_python(PyPid, <<"websocket_disconnect">>, PythonMsg),
+    omn_worker:call_python(Pid, <<"websocket_disconnect">>, Msg),
+    io:format("[WS] Connection ~p closed: ~p~n", [ReqId, Reason]),
+    ok;
+websocket_terminate(_Reason, _Req, _State) ->
     ok.
 
-%% FIX 4: Extracted shared response-handling logic to eliminate duplication
-%% and fix the missing comma before the wildcard clause (original line 53 crash).
-handle_python_ws_response(PyPid, PythonMsg, ConnState, State) ->
-    case omn_worker:call_python(PyPid, <<"websocket_message">>, PythonMsg) of
-        {ok, PythonResponse} ->
-            NewConnState = maps:get(<<"connection_state">>, PythonResponse, ConnState),
-            case maps:get(<<"websocket_message_response">>, PythonResponse, []) of
-                Messages when is_list(Messages) ->
-                    Actions = lists:foldl(fun(Msg, Acc) ->
-                        %% FIX 5: Missing comma before wildcard clause caused
-                        %% "syntax error before: _" on line 53 (and equivalent binary block).
-                        case maps:get(<<"type">>, Msg, <<"unknown">>) of
-                            <<"send_text">>   -> Acc ++ [{reply, {text,   maps:get(<<"content">>, Msg)}}];
-                            <<"send_binary">> -> Acc ++ [{reply, {binary, maps:get(<<"content">>, Msg)}}];
-                            <<"close">>       -> Acc ++ [{close, maps:get(<<"code">>, Msg, 1000)}];
-                            _                 -> Acc
-                        end
-                    end, [], Messages),
-                    {Actions, State#state{connection_state = NewConnState}};
-                _ ->
-                    io:format("[WS] Worker ~p sent malformed WS message response: ~p~n",
-                              [State#state.worker_id, PythonResponse]),
-                    {close, 1001, State}
-            end;
-        {error, timeout} ->
-            io:format("[WS] Worker ~p timed out on WS message~n", [State#state.worker_id]),
-            {close, 1001, State};
-        {error, Reason} ->
-            io:format("[WS] Worker ~p crashed on WS message: ~p~n", [State#state.worker_id, Reason]),
-            {close, 1001, State}
+%% INTERNAL HELPERS
+forward_to_python(Type, Data, State = #state{pid=Pid, req_id=ReqId, connection_state=CS}) ->
+    Msg = #{
+        <<"id">> => ReqId,
+        <<"type">> => <<"websocket_message">>,
+        <<"payload">> => #{
+            <<"message_type">> => Type,
+            <<"content">> => Data,
+            <<"connection_state">> => CS
+        }
+    },
+
+    case omn_worker:call_python(Pid, <<"websocket_message">>, Msg) of
+        {ok, Resp} ->
+            NewCS = maps:get(<<"connection_state">>, Resp, CS),
+            Actions = parse_actions(maps:get(<<"websocket_message_response">>, Resp, [])),
+            {Actions, State#state{connection_state = NewCS}};
+        _ ->
+            {stop, worker_error, State}
     end.
 
-%% FIX 6: inet:ntoa/1 is the correct function; inet_parse:ntoa/1 is internal/deprecated.
-get_client_info(Req) ->
-    {Ip, Port} = cowboy_req:peer(Req),
-    {list_to_binary(inet:ntoa(Ip)), Port}.
-
-get_close_code(normal)   -> 1000;
-get_close_code(shutdown) -> 1001;
-get_close_code(timeout)  -> 1008;
-get_close_code(kill)     -> 1001;
-get_close_code(_)        -> 1001.
+parse_actions(List) when is_list(List) ->
+    lists:foldl(fun(M, Acc) ->
+        case maps:get(<<"type">>, M, <<>>) of
+            <<"send_text">> -> Acc ++ [{text, maps:get(<<"content">>, M)}];
+            <<"send_binary">> -> Acc ++ [{binary, maps:get(<<"content">>, M)}];
+            <<"close">> -> Acc ++ [close];
+            _ -> Acc
+        end
+    end, [], List);
+parse_actions(_) -> [].

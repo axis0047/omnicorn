@@ -5,7 +5,7 @@
 start(_StartType, _StartArgs) ->
     PortStr = os:getenv("OMNICORN_PORT", "8080"),
     WorkersStr = os:getenv("OMNICORN_WORKERS", "4"),
-    AppPath = os:getenv("OMNICORN_APP", "demo:app"), %%placeholder demo
+    AppPath = os:getenv("OMNICORN_APP", "demo:app"),
 
     Port = list_to_integer(PortStr),
     WorkerCount = list_to_integer(WorkersStr),
@@ -13,13 +13,14 @@ start(_StartType, _StartArgs) ->
     io:format("[Omnicorn] Starting Control Plane on Port ~p with ~p workers wrapping ~s~n",
               [Port, WorkerCount, AppPath]),
 
-    %% Define Cowboy Routes: HTTP and WebSocket
+    %% Define Routes
     Dispatch = cowboy_router:compile([
         {'_', [
-            %% HTTP route (matches everything not /ws)
-            {<<"/[...:rest]">>, omn_http, []},
-            %% WebSocket route (matches /ws or /ws/subpath)
-            {<<"/ws/[...:rest]">>, omn_http, [{websocket_handler, omn_ws_handler}]}
+            %% 1. WebSocket Route: Explicitly match /ws (and subpaths)
+            {<<"/ws/[...]">>, omn_ws_handler, []},
+
+            %% 2. Catch-all HTTP Route
+            {'_', omn_http, []}
         ]}
     ]),
 
