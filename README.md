@@ -13,7 +13,7 @@ This current implementation (release/dev branch, currently default branch, may c
 
 ---
 
-##Installation
+## Installation
 - Clone this repository
 - You need Python3, Erlang and rebar3 to build this from source.
 ```bash
@@ -25,7 +25,7 @@ pip install .
 ```
 - Omnicorn should build now, and you may build this inside your projects venv for ease, I haven't test other scenarios much.
 
-##How to run a server with this
+## How to run a server with this
 - This currently offer a minimal config system using a yaml file, please refer following format. You may add this inside your project root.
 ```yaml
 server:
