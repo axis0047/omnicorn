@@ -3,7 +3,8 @@ import os
 import importlib
 import traceback
 import inspect
-import asyncio
+import socket
+import signal
 
 from .protocol import Protocol
 from .wsgi import WSGIAdapter
@@ -14,14 +15,15 @@ class OmniWorker:
     def __init__(self, app_path):
         self.app = self.load_app(app_path)
 
-        # Detect App Type
         if inspect.iscoroutinefunction(self.app) or hasattr(self.app, '__await__'):
             self.app_type = 'asgi'
         else:
             self.app_type = 'wsgi'
 
-        self.stdin = sys.stdin.buffer
-        self.stdout = sys.stdout.buffer
+        # Connect to the High-Speed UDS provided by Erlang
+        self.sock_path = os.environ.get("OMNICORN_SOCK")
+        if not self.sock_path:
+            raise ValueError("OMNICORN_SOCK env var missing. Cannot connect to control plane.")
 
     def load_app(self, path):
         try:
@@ -31,26 +33,33 @@ class OmniWorker:
             mod = importlib.import_module(mod_name)
             return getattr(mod, var_name)
         except Exception:
-            sys.stderr.write(f"Failed to load app: {path}\n")
+            # Print to stderr, which Erlang now logs correctly without crashing!
+            sys.stderr.write(f"🔥 Failed to load app: {path}\n")
             traceback.print_exc()
             sys.exit(1)
 
     def run(self):
-        # 1. Handshake
-        Protocol.write(self.stdout, {
+        # 1. Establish Data Plane Connection
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.connect(self.sock_path)
+        except Exception as e:
+            sys.stderr.write(f"🔥 Could not connect to UDS {self.sock_path}: {e}\n")
+            sys.exit(1)
+
+        # 2. Handshake
+        Protocol.write(sock, {
             "status": "ready",
             "pid": os.getpid(),
             "type": self.app_type
         })
 
-        # 2. Event Loop
+        # 3. Event Loop
         while True:
-            # Blocking Read
-            msg = Protocol.read(self.stdin)
+            msg = Protocol.read(sock)
 
             if msg is None:
-                # Pipe closed by Erlang, exit gracefully
-                break
+                break # Parent closed socket
 
             req_id = msg.get('id')
             msg_type = msg.get('type')
@@ -75,34 +84,33 @@ class OmniWorker:
                     else:
                         response_data = {'status': 404, 'error': 'Function not found'}
 
-                else:
-                    response_data = {'error': 'Unknown message type'}
-
-                # Send Response
-                Protocol.write(self.stdout, {
+                Protocol.write(sock, {
                     'id': req_id,
                     'data': response_data
                 })
 
             except Exception:
-                # Catch-all for app errors to prevent worker death
-                # Let Erlang decide if it wants to kill us (via 500 status logic or timeout)
                 err_msg = traceback.format_exc()
-                sys.stderr.write(err_msg)
+                # Safe logging to stderr
+                sys.stderr.write(f"Worker Exception request_id={req_id}:\n{err_msg}")
 
-                Protocol.write(self.stdout, {
+                Protocol.write(sock, {
                     'id': req_id,
                     'data': {
                         'status': 500,
                         'headers': {'content-type': 'text/plain'},
-                        'body': f"Internal Worker Error:\n{err_msg}"
+                        'body': "Internal Worker Error"
                     }
                 })
 
+        sock.close()
+
 if __name__ == "__main__":
+    # Handle SIGTERM gracefully
+    signal.signal(signal.SIGTERM, lambda s, f: sys.exit(0))
+
     if len(sys.argv) < 2:
         print("Usage: python -m omnicorn.worker <module:app>")
         sys.exit(1)
 
-    worker = OmniWorker(sys.argv[1])
-    worker.run()
+    OmniWorker(sys.argv[1]).run()
