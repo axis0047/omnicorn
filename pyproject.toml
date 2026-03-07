@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "omnicorn"
+version = "1.0.0"
+description = "Erlang/OTP Process Supervisor for Python WSGI/ASGI Applications"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "click",
+]
+
+[project.scripts]
+omnicorn = "omnicorn.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["omnicorn*"]

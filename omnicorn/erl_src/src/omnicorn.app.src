@@ -1,0 +1,16 @@
+{application, omnicorn,
+ [{description, "Omnicorn: Python execution inside Erlang Supervision"},
+  {vsn, "1.0.0"},
+  {registered, []},
+  {mod, {omnicorn_app, []}},
+  {applications,
+   [kernel,
+    stdlib,
+    cowboy,
+    jsone
+   ]},
+  {env,[]},
+  {modules, []},
+  {licenses, ["Apache 2.0"]},
+  {links, []}
+ ]}.
