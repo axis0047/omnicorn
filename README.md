@@ -11,7 +11,7 @@
 
 Omnicorn is a experimental(not very, a lot of people have probably done this, but i couldn't find anything like this) Python ASGI/WSGI webserver + toolkit that is written in erlang. The idea is treating each ASGI or WSGI worker as an erlang processes and supervising and managing them with OTP functionalities and tools. What this is trying to solve is unplanned chaos that a system encounters when coupled with large scale complex systems. Existing servers like Gunicorn, Uvicorn or uWSGI or even Hypercone is built for the performance and handling known runtime or production errors, with try except or in similar patterns. But in my opinion and experience they lack the stability when it comes to the issues that originated from chaos and randomness of large scale or high throughput systems. For example droping tcp connections or app fully crashing on higher load or unplanned network latency that makes tasks to run out of sync and enter into a crashloop. Erlang/OTP is built exactly for handling those chaotic scenarios and be highly available and massively scalable. Python may never achieve that level of scalability, but trying to borrow that super power from erlang/OTP is a endeavour worth taking.
 
-This current implementation (release/dev branch, currently default branch, may change in feature) is the very minimum basic proof of concept implementation of the previously discussed concept. This currently has WSGI and ASGI support (support that is enough to run a app). I tested this mainly with flask and worked okay. Please refer the below guide to installation and usage.
+This current implementation (release/dev branch, currently default branch, may change in feature) is the very minimum basic proof of concept implementation of the previously discussed concept. This currently has WSGI and ASGI support (support that is enough to run a app). I tested this mainly with flask and worked okay. Please refer the below guide for installation and usage.
 
 Also note that this is very unstable and has almost zero test coverage and has AI slop too.
 
@@ -54,7 +54,7 @@ omnicorn --config omnicorn.yaml
 ## What is on the way
 - WebSocket support
 - All other regular python webserver functionalities (dev server, hot reload)
-- Toolkit (set of decorators) that wraps python functions to supervise and managed them with OTP tools
+- Toolkit (set of decorators) that wraps python functions to supervise and manage them with OTP tools
 - Supervision tree hierachy resolver (So Python developer can use decorator where he need, and not think about that he wrapped outer function with totaly opposite behaviour.)
 - Intelligent (Not LLM) supervision based on situated AI and free energy principle. (This is the real experimental end goal, most probably wont make upto here.)
 
