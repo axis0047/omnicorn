@@ -13,6 +13,8 @@ Omnicorn is a experimental(not very, a lot of people have probably done this, bu
 
 This current implementation (release/dev branch, currently default branch, may change in feature) is the very minimum basic proof of concept implementation of the previously discussed concept. This currently has WSGI and ASGI support (support that is enough to run a app). I tested this mainly with flask and worked okay. Please refer the below guide to installation and usage.
 
+Also note that this is very unstable and has almost zero test coverage and has AI slop too.
+
 ---
 
 ## Installation
