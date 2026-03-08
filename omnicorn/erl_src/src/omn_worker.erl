@@ -98,9 +98,17 @@ handle_info({tcp, _Socket, Data}, State) ->
                             Payload = maps:get(<<"payload">>, Decoded),
                             Key = maps:get(<<"key">>, Payload),
                             ReqId = maps:get(<<"id">>, Decoded),
+                            Now = erlang:system_time(millisecond),
 
-                            Value = case ets:lookup(omnicorn_cache, Key) of
-                                [{Key, Val}] -> Val;[] -> nil
+                            %% ETS stores tuples: {Key, Value, ExpireAt}
+                            Value = case ets:lookup(omnicorn_cache, Key) of[{Key, Val, ExpireAt}] ->
+                                    if
+                                        ExpireAt == 0 -> Val; %% No TTL
+                                        Now =< ExpireAt -> Val; %% Valid TTL
+                                        true ->
+                                            ets:delete(omnicorn_cache, Key), %% Expired! Evict it.
+                                            nil
+                                    end;[] -> nil
                             end,
 
                             Packet = term_to_binary(#{<<"id">> => ReqId, <<"type">> => <<"ets_reply">>, <<"data">> => Value}),
@@ -111,11 +119,39 @@ handle_info({tcp, _Socket, Data}, State) ->
                             Payload = maps:get(<<"payload">>, Decoded),
                             Key = maps:get(<<"key">>, Payload),
                             Val = maps:get(<<"value">>, Payload),
+                            TTL = maps:get(<<"ttl">>, Payload, 0), %% TTL in milliseconds
                             ReqId = maps:get(<<"id">>, Decoded),
 
-                            ets:insert(omnicorn_cache, {Key, Val}),
+                            ExpireAt = if TTL > 0 -> erlang:system_time(millisecond) + TTL; true -> 0 end,
+                            ets:insert(omnicorn_cache, {Key, Val, ExpireAt}),
 
                             Packet = term_to_binary(#{<<"id">> => ReqId, <<"type">> => <<"ets_reply">>, <<"data">> => <<"ok">>}),
+                            gen_tcp:send(State#state.data_socket, Packet),
+                            {noreply, State};
+
+                        <<"ets_delete">> ->
+                            Payload = maps:get(<<"payload">>, Decoded),
+                            Key = maps:get(<<"key">>, Payload),
+                            ReqId = maps:get(<<"id">>, Decoded),
+
+                            ets:delete(omnicorn_cache, Key),
+
+                            Packet = term_to_binary(#{<<"id">> => ReqId, <<"type">> => <<"ets_reply">>, <<"data">> => <<"ok">>}),
+                            gen_tcp:send(State#state.data_socket, Packet),
+                            {noreply, State};
+
+                        <<"ets_incr">> ->
+                            Payload = maps:get(<<"payload">>, Decoded),
+                            Key = maps:get(<<"key">>, Payload),
+                            Amount = maps:get(<<"amount">>, Payload, 1),
+                            ReqId = maps:get(<<"id">>, Decoded),
+
+                            %% NATIVE SUPERPOWER: Lock-free atomic increment.
+                            %% If key doesn't exist, it defaults to {Key, 0, 0} and increments from there!
+                            NewVal = try ets:update_counter(omnicorn_cache, Key, {2, Amount}, {Key, 0, 0})
+                                     catch _:_ -> nil end,
+
+                            Packet = term_to_binary(#{<<"id">> => ReqId, <<"type">> => <<"ets_reply">>, <<"data">> => NewVal}),
                             gen_tcp:send(State#state.data_socket, Packet),
                             {noreply, State};
 

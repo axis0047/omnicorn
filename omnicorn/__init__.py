@@ -1,2 +1,2 @@
-__version__ = "1.0.0"
-from .cache import get, set
+__version__ = "0.1.0"
+from .cache import get, set, delete, incr

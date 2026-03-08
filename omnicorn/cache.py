@@ -6,15 +6,29 @@ _pending_calls = {}
 _req_counter = 0
 
 async def get(key: str):
-    """Fetch a value from Erlang Term Storage (ETS) in microseconds."""
     res = await _rpc_call(b'ets_get', {b'key': key.encode('utf-8')})
     if res == b'nil': return None
     return res
 
-async def set(key: str, value):
-    """Set a value in Erlang Term Storage (ETS) available to ALL workers instantly."""
+async def set(key: str, value, ttl_ms: int = 0):
+    """Set a value. ttl_ms is Time-To-Live in milliseconds."""
     if isinstance(value, str): value = value.encode('utf-8')
-    return await _rpc_call(b'ets_set', {b'key': key.encode('utf-8'), b'value': value})
+    return await _rpc_call(b'ets_set', {
+        b'key': key.encode('utf-8'),
+        b'value': value,
+        b'ttl': ttl_ms
+    })
+
+async def delete(key: str):
+    """Instantly evict a key globally."""
+    return await _rpc_call(b'ets_delete', {b'key': key.encode('utf-8')})
+
+async def incr(key: str, amount: int = 1):
+    """
+    Atomic lock-free counter. Perfect for rate-limiting.
+    Returns the new integer value.
+    """
+    return await _rpc_call(b'ets_incr', {b'key': key.encode('utf-8'), b'amount': amount})
 
 async def _rpc_call(call_type: bytes, payload: dict):
     global _req_counter, _ipc_writer, _ipc_lock
@@ -22,10 +36,10 @@ async def _rpc_call(call_type: bytes, payload: dict):
         raise RuntimeError("Omnicorn IPC not initialized.")
 
     _req_counter += 1
-    req_id = _req_counter
-    loop = asyncio.get_running_loop()
+    # Use string prefix to guarantee Python-originated IDs never collide with Erlang HTTP Req IDs
+    req_id = f"py_{_req_counter}".encode('utf-8')
 
-    # Create a Future that will suspend this specific task until Erlang replies
+    loop = asyncio.get_running_loop()
     fut = loop.create_future()
     _pending_calls[req_id] = fut
 
