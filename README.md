@@ -6,7 +6,7 @@ and in the darkness bind them
 In the land of Scale  
 where the chaos lie...*
 ### 🗿🌽 ඔම්නිකෝර්න් - සියල්ල පාලනය කරන තනි ඉරිඟුව
-(Don't ask me to change readme. I won't)
+(Don't ask me to change this. I won't)
 
 ---
 
