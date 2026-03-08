@@ -5,12 +5,10 @@ import traceback
 import inspect
 import socket
 import signal
-import erlpack
 
 from .protocol import Protocol
 from .wsgi import WSGIAdapter
 from .asgi import ASGIAdapter
-from .core import get_task
 
 class OmniWorker:
     def __init__(self, app_path):
@@ -39,23 +37,19 @@ class OmniWorker:
             sys.exit(1)
 
     def run(self):
-        # 1. Establish Data Plane Connection (UDS)
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
-            # FIX: Do not split/tuple the path. Use the raw string for UDS.
             sock.connect(self.sock_path)
         except Exception as e:
             sys.stderr.write(f"🔥 Could not connect to UDS {self.sock_path}: {e}\n")
             sys.exit(1)
 
-        # 2. Handshake
         Protocol.write(sock, {
             b'status': b'ready',
             b'pid': os.getpid(),
             b'type': self.app_type
         })
 
-        # 3. Event Loop
         while True:
             msg = Protocol.read(sock)
             if msg is None: break
@@ -64,30 +58,13 @@ class OmniWorker:
             msg_type = msg.get(b'type')
             payload = msg.get(b'payload', {})
 
-            response_data = {}
-
             try:
-                if msg_type == b'http':
-                    if self.app_type == b'asgi':
-                        response_data = ASGIAdapter._handle_http_request(self.app, payload)
-                    else:
+                # Radically simplified. ASGI handles all phases, WSGI handles only HTTP.
+                if self.app_type == b'asgi':
+                    response_data = ASGIAdapter.run_phase(self.app, msg_type, payload)
+                else:
+                    if msg_type == b'http':
                         response_data = WSGIAdapter.run(self.app, payload)
-
-                elif msg_type == b'websocket_handshake':
-                    if self.app_type == b'asgi':
-                        response_data = ASGIAdapter._handle_websocket_request(self.app, payload)
-                    else:
-                        response_data = {b'status': 500, b'body': b"WSGI app cannot handle WebSockets"}
-
-                elif msg_type == b'websocket_message':
-                    if self.app_type == b'asgi':
-                        response_data = ASGIAdapter._handle_websocket_message(self.app, payload)
-                    else:
-                        response_data = {b'status': 500, b'body': b"WSGI app cannot handle WebSockets"}
-
-                elif msg_type == b'websocket_disconnect':
-                    if self.app_type == b'asgi':
-                        response_data = ASGIAdapter._handle_websocket_disconnect(self.app, payload)
                     else:
                         response_data = {b'status': 500, b'body': b"WSGI app cannot handle WebSockets"}
 
