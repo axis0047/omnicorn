@@ -45,7 +45,7 @@ init(Req, State) ->
     Headers = maps:get(<<"headers">>, Response, #{}),
     RespBody = maps:get(<<"body">>, Response, <<>>),
 
-    %% Convert Header Keys to Binary if they are atoms
+    %% Convert Atom keys to Binary for Cowboy
     CowboyHeaders = maps:fold(fun(K, V, Acc) ->
         BinK = if is_atom(K) -> atom_to_binary(K, utf8); true -> K end,
         Acc#{BinK => V}

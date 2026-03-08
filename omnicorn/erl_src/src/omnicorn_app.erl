@@ -10,16 +10,14 @@ start(_StartType, _StartArgs) ->
     Port = list_to_integer(PortStr),
     WorkerCount = list_to_integer(WorkersStr),
 
-    io:format("[Omnicorn] Starting Control Plane on Port ~p with ~p workers wrapping ~s~n",
-              [Port, WorkerCount, AppPath]),
+    io:format("[Omnicorn] Starting Control Plane on Port ~p...~n", [Port]),
 
-    %% Define Routes
+    %% FIX: Specific routes must come BEFORE catch-all routes
     Dispatch = cowboy_router:compile([
         {'_', [
-            %% 1. WebSocket Route: Explicitly match /ws (and subpaths)
+            %% 1. WebSocket Route (Specific)
             {<<"/ws/[...]">>, omn_ws_handler, []},
-
-            %% 2. Catch-all HTTP Route
+            %% 2. HTTP Catch-all (Generic)
             {'_', omn_http, []}
         ]}
     ]),
@@ -31,5 +29,4 @@ start(_StartType, _StartArgs) ->
 
     omnicorn_sup:start_link(WorkerCount, AppPath).
 
-stop(_State) ->
-    ok.
+stop(_State) -> ok.
