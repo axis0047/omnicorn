@@ -3,7 +3,7 @@
 One corn to find them all,  
 One corn to bring them all  
 and in the darkness bind them  
-In the land of scalability  
+In the land of Scale  
 where the chaos lie...*
 ### 🗿🌽 ඔම්නිකෝර්න් - සියල්ල පාලනය කරන තනි ඉරිඟුව
 (Don't ask me to change readme. I won't)
@@ -16,7 +16,8 @@ Omnicorn is an experimental(not very, a lot of people have probably done this, b
 
 On the other hand, Erlang/OTP is built exactly for handling those chaotic scenarios and be highly available and massively scalable.As they say, every cloud service is a bad and incomplete implementation of Erlang/OTP. Erlang/OTP is that good.Python may never achieve that level of scalability, but trying to borrow that super powers from erlang/OTP is an endeavour worth taking.
 
-This current implementation (release/dev branch, currently default branch, may change in feature) is the very minimum basic proof of concept implementation of the previously discussed concept. This currently has WSGI and ASGI support (support that is enough to run an app). I tested this mainly with flask and worked okay. Please refer the below guide for installation and usage.
+This current implementation (release/dev branch, currently default branch, may change in feature) is the very minimum basic proof of concept implementation of the previously discussed concept. This currently has WSGI and ASGI support (support that is enough to run an app).
+Websocket support, Basic idempotency caching, Background tasks, and task recovery (task storages to recover tasks, both volatile and persistent tasks). On top of those features, omnicorn tries to utilise Erlang/OTP supervision for instant recovery and high availability. (same as server support, these features are just barely working) I tested this mainly with flask and fastapi it and worked okay. Please refer the below guide for installation and usage. 
 
 Also note that this is very unstable and has almost zero test coverage and has AI slop too.
 
@@ -49,21 +50,28 @@ workers:
 
 upstream:
   app_path: "your_app:app" #Same as other servers
+  mode: "auto"
 ```
 - Run the app with following command, omnicorn.yaml is your yaml config file
 ```bash
 omnicorn --config omnicorn.yaml
 ```
 
+- This currently has few wrappers. View __init__.py for them. (let_it_crash and task)
+
 - Also note that the execution time maybe higher than other servers, for me it didn't show any noticable differences (for now)
+
+edit - I tested and this is a little faster than gunicorn, i guess it is mainly due to not having serialization load.
+
 ---
 
 ## What is on the way
-- WebSocket support
+- Stable release
 - All other regular python webserver functionalities (dev server, hot reload)
-- Cache system and background workers system utilizing erlang/OTP ETS and process handling features.
-- Toolkit (set of decorators) that wraps python functions to supervise and manage them with OTP tools
+- Cache system and background workers system utilizing erlang/OTP ETS and process handling features. (currently has basic implementations, will work on them, need to learn more)
+- Toolkit for orchestration (set of decorators) that wraps python functions to supervise and manage them with OTP tools (basic implementation done, barely works)
 - Supervision tree hierachy resolver (So Python developer can use decorators where he need, and not think about that he wrapped outer function with totaly opposite behaviour.)
-- Intelligent (Not LLM) supervision based on situated AI and free energy principle (or something more suitable). (This is the real experimental end goal, most probably wont make upto here.)
+- Runtime code changes (Does anyone need that for Python?)
+- Intelligent (Not LLM) supervision based on situated AI and free energy principle (or something more suitable and in-between). (This is a real experimental end goal, most probably wont make upto here.)
 
 ---
