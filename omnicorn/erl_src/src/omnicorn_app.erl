@@ -12,13 +12,14 @@ start(_StartType, _StartArgs) ->
 
     io:format("[Omnicorn] Starting Control Plane on Port ~p...~n", [Port]),
 
-    %% FIX: Specific routes must come BEFORE catch-all routes
+    %% 🔥 SUPERPOWER: Create a global, highly concurrent in-memory database.
+    %% read_concurrency and write_concurrency allow completely lock-free access across all workers!
+    ets:new(omnicorn_cache,[named_table, public, set, {read_concurrency, true}, {write_concurrency, true}]),
+
     Dispatch = cowboy_router:compile([
-        {'_', [
-            %% 1. WebSocket Route (Specific)
+        {'_',[
             {<<"/ws/[...]">>, omn_ws_handler, []},
-            %% 2. HTTP Catch-all (Generic)
-            {'_', omn_http, []}
+            {'_', omn_http,[]}
         ]}
     ]),
 

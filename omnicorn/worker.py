@@ -9,6 +9,7 @@ import inspect
 from .protocol import AsyncProtocol
 from .wsgi import WSGIAdapter
 from .asgi import ASGIAdapter
+from . import cache
 
 class OmniWorker:
     def __init__(self, app_path, mode):
@@ -68,30 +69,41 @@ class OmniWorker:
             })
 
     async def async_run(self):
-        try:
-            reader, writer = await asyncio.open_unix_connection(self.sock_path)
-        except Exception as e:
-            sys.stderr.write(f"🔥 Could not connect to UDS {self.sock_path}: {e}\n")
-            sys.exit(1)
+            try:
+                reader, writer = await asyncio.open_unix_connection(self.sock_path)
+            except Exception as e:
+                sys.stderr.write(f"🔥 Could not connect to UDS {self.sock_path}: {e}\n")
+                sys.exit(1)
 
-        # Handshake
-        await AsyncProtocol.write(writer, self.write_lock, {
-            b'status': b'ready',
-            b'pid': os.getpid(),
-            b'type': self.app_type
-        })
+            # Wire up the global cache IPC
+            cache._ipc_writer = writer
+            cache._ipc_lock = self.write_lock
 
-        # Main Multiplexing Loop
-        while True:
-            msg = await AsyncProtocol.read(reader)
-            if msg is None:
-                break # Connection closed by Erlang Master
+            await AsyncProtocol.write(writer, self.write_lock, {
+                b'status': b'ready',
+                b'pid': os.getpid(),
+                b'type': self.app_type
+            })
 
-            # Fire & Forget! Do NOT await here. This enables massive concurrency.
-            asyncio.create_task(self._handle_request(msg, writer))
+            while True:
+                msg = await AsyncProtocol.read(reader)
+                if msg is None:
+                    break
 
-        writer.close()
-        await writer.wait_closed()
+                msg_type = msg.get(b'type')
+
+                # 🔥 Check if this is a fast-path RPC reply from Erlang
+                if msg_type == b'ets_reply':
+                    req_id = msg.get(b'id')
+                    fut = cache._pending_calls.pop(req_id, None)
+                    if fut and not fut.done():
+                        fut.set_result(msg.get(b'data'))
+                else:
+                    # Standard HTTP/WS inbound traffic
+                    asyncio.create_task(self._handle_request(msg, writer))
+
+            writer.close()
+            await writer.wait_closed()
 
     def run(self):
         asyncio.run(self.async_run())

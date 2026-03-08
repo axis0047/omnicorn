@@ -23,7 +23,6 @@ call_python(Pid, Type, Payload) ->
     TimeoutStr = os:getenv("OMNICORN_TIMEOUT", "5000"),
     Timeout = list_to_integer(TimeoutStr),
     try gen_server:call(Pid, {request, Type, Payload}, Timeout) of
-        %% Wrap the returned raw map inside {ok, Map} so routers can pattern match safely
         Result -> {ok, Result}
     catch
         exit:{timeout, _} -> {error, timeout};
@@ -66,7 +65,7 @@ init([AppModule, Id]) ->
             end;
 
         {error, Reason} ->
-            io:format("Failed to create UDS listener: ~p~n", [Reason]),
+            io:format("Failed to create UDS listener: ~p~n",[Reason]),
             {stop, socket_create_error}
     end.
 
@@ -83,28 +82,60 @@ handle_call({request, Type, Payload}, From, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
+%% --- DATA PLANE (UDS Socket) ---
 handle_info({tcp, _Socket, Data}, State) ->
     try binary_to_term(Data) of
         Decoded ->
+            %% 1. Is this a Worker Handshake?
             case maps:get(<<"status">>, Decoded, undefined) of
                 <<"ready">> ->
                     omn_router:checkin_worker(self()),
                     {noreply, State};
                 _ ->
-                    ReqId = maps:get(<<"id">>, Decoded),
-                    ResultData = maps:get(<<"data">>, Decoded, #{}),
-                    case maps:take(ReqId, State#state.requests) of
-                        {From, NewReqs} ->
-                            gen_server:reply(From, ResultData),
-                            omn_router:checkin_worker(self()),
-                            {noreply, State#state{requests = NewReqs}};
-                        error ->
-                            {noreply, State}
+                    %% 2. Is this an RPC call from Python to Erlang?
+                    case maps:get(<<"type">>, Decoded, undefined) of
+                        <<"ets_get">> ->
+                            Payload = maps:get(<<"payload">>, Decoded),
+                            Key = maps:get(<<"key">>, Payload),
+                            ReqId = maps:get(<<"id">>, Decoded),
+
+                            Value = case ets:lookup(omnicorn_cache, Key) of
+                                [{Key, Val}] -> Val;[] -> nil
+                            end,
+
+                            Packet = term_to_binary(#{<<"id">> => ReqId, <<"type">> => <<"ets_reply">>, <<"data">> => Value}),
+                            gen_tcp:send(State#state.data_socket, Packet),
+                            {noreply, State};
+
+                        <<"ets_set">> ->
+                            Payload = maps:get(<<"payload">>, Decoded),
+                            Key = maps:get(<<"key">>, Payload),
+                            Val = maps:get(<<"value">>, Payload),
+                            ReqId = maps:get(<<"id">>, Decoded),
+
+                            ets:insert(omnicorn_cache, {Key, Val}),
+
+                            Packet = term_to_binary(#{<<"id">> => ReqId, <<"type">> => <<"ets_reply">>, <<"data">> => <<"ok">>}),
+                            gen_tcp:send(State#state.data_socket, Packet),
+                            {noreply, State};
+
+                        %% 3. Catch-all: This is a Response from Python returning to an Erlang HTTP/WS Request
+                        _ ->
+                            ReqId = maps:get(<<"id">>, Decoded),
+                            ResultData = maps:get(<<"data">>, Decoded, #{}),
+                            case maps:take(ReqId, State#state.requests) of
+                                {From, NewReqs} ->
+                                    gen_server:reply(From, ResultData),
+                                    omn_router:checkin_worker(self()),
+                                    {noreply, State#state{requests = NewReqs}};
+                                error ->
+                                    {noreply, State}
+                            end
                     end
             end
     catch
-        _:_ ->
-            io:format("ETF Decode Error in Worker ~p~n",[State#state.worker_id]),
+        _:Err ->
+            io:format("ETF Decode Error in Worker ~p: ~p~n",[State#state.worker_id, Err]),
             {noreply, State}
     end;
 
@@ -113,7 +144,7 @@ handle_info({tcp_closed, _Socket}, State) ->
     {stop, normal, State};
 
 handle_info({Port, {data, LogLine}}, State = #state{log_port=Port}) ->
-    io:format("[PYTHON-LOG ~p] ~s", [State#state.worker_id, LogLine]),
+    io:format("[PYTHON-LOG ~p] ~s",[State#state.worker_id, LogLine]),
     {noreply, State};
 
 handle_info({Port, {exit_status, Status}}, State = #state{log_port=Port}) ->
