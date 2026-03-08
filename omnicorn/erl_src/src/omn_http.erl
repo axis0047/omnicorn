@@ -45,10 +45,20 @@ init(Req, State) ->
     Headers = maps:get(<<"headers">>, Response, #{}),
     RespBody = maps:get(<<"body">>, Response, <<>>),
 
-    %% Convert Atom keys to Binary for Cowboy
+    %% Convert Atom keys to Binary, and strictly LOWERCASE them!
+    %% Cowboy 2.0+ strictly enforces HTTP/2 rules which dictate all lowercase keys.
     CowboyHeaders = maps:fold(fun(K, V, Acc) ->
         BinK = if is_atom(K) -> atom_to_binary(K, utf8); true -> K end,
-        Acc#{BinK => V}
+        LowerK = string:lowercase(BinK),
+
+        %% Also ensure values are binaries (Flask might return ints)
+        BinV = if
+            is_integer(V) -> integer_to_binary(V);
+            is_list(V) -> iolist_to_binary(V);
+            is_atom(V) -> atom_to_binary(V, utf8);
+            true -> V
+        end,
+        Acc#{LowerK => BinV}
     end, #{}, Headers),
 
     Req3 = cowboy_req:reply(Status, CowboyHeaders, RespBody, Req2),
@@ -69,4 +79,4 @@ log_request(Req, Status, LatencyUs) ->
     Path = cowboy_req:path(Req),
     LatencyMs = LatencyUs / 1000.0,
     Color = if Status >= 500 -> ?RED; Status >= 400 -> ?YELLOW; true -> ?GREEN end,
-    io:format("[HTTP] \"~s ~s\" ~s~p~s - ~.2fms~n", [Method, Path, Color, Status, ?RESET, LatencyMs]).
+    io:format("[HTTP] \"~s ~s\" ~s~p~s - ~.2fms~n",[Method, Path, Color, Status, ?RESET, LatencyMs]).

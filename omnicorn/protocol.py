@@ -1,8 +1,7 @@
 import struct
-import json
 import sys
-import io
-import socket
+import os
+import erlpack
 
 class Protocol:
     # 4 byte unsigned int, big endian
@@ -12,7 +11,7 @@ class Protocol:
     @staticmethod
     def read(sock):
         """
-        Reads a length-prefixed message from a socket.
+        Reads a length-prefixed ETF message from a socket.
         """
         try:
             # 1. Read Length Header
@@ -27,22 +26,27 @@ class Protocol:
             if not payload_bytes:
                 return None
 
-            # 3. Decode JSON
-            # In Phase 3, we will swap json.loads for erlpack.unpack here
-            return json.loads(payload_bytes.decode('utf-8'))
+            # 3. Decode ETF
+            return erlpack.unpack(payload_bytes)
 
-        except (struct.error, json.JSONDecodeError, OSError) as e:
-            sys.stderr.write(f"Protocol Error: {e}\n")
+        except struct.error as e:
+            sys.stderr.write(f"Protocol Struct Error: {e}\n")
+            return None
+        except OSError as e:
+            sys.stderr.write(f"Protocol OS Error: {e}\n")
+            return None
+        except Exception as e:
+            sys.stderr.write(f"Protocol Decode Error: {e}\n")
             return None
 
     @staticmethod
     def write(sock, data):
         """
-        Writes a length-prefixed JSON message to a socket.
+        Writes a length-prefixed ETF message to a socket.
         """
         try:
-            # 1. Encode JSON
-            payload = json.dumps(data).encode('utf-8')
+            # 1. Encode ETF (Dicts -> Maps, Bytes -> Binaries)
+            payload = erlpack.pack(data)
 
             # 2. Create Header
             header = Protocol.HEADER_STRUCT.pack(len(payload))
@@ -51,6 +55,8 @@ class Protocol:
             sock.sendall(header + payload)
         except OSError:
             sys.exit(1)
+        except Exception as e:
+            sys.stderr.write(f"Protocol Encode Error: {e}\n")
 
     @staticmethod
     def _recv_exact(sock, n):

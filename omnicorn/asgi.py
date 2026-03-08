@@ -15,7 +15,6 @@ class ASGIAdapter:
 
     @staticmethod
     async def _run_async(app, etf_payload):
-        # Determine the scope type (http or websocket)
         scope_type = etf_payload.get(b'scope_type', b'http').decode('utf-8')
 
         if scope_type == 'http':
@@ -27,19 +26,27 @@ class ASGIAdapter:
             return {b'status': 500, b'body': b"Unknown scope type"}
 
     @staticmethod
+    def _parse_headers(etf_payload):
+        # Gracefully handle `erlpack` translating Erlang cowboy header maps to dicts
+        req_headers_etf = etf_payload.get(b'headers', {})
+        req_headers_asgi =[]
+        header_items = req_headers_etf.items() if isinstance(req_headers_etf, dict) else req_headers_etf
+
+        for k_bin, v_bin in header_items:
+            k_bytes = k_bin if isinstance(k_bin, bytes) else str(k_bin).encode('utf-8')
+            v_bytes = v_bin if isinstance(v_bin, bytes) else str(v_bin).encode('utf-8')
+            req_headers_asgi.append((k_bytes.lower(), v_bytes))
+        return req_headers_asgi
+
+    @staticmethod
     async def _handle_http_request(app, etf_payload):
-        # Decode Erlang-native types for HTTP
-        method = etf_payload[b'method'].decode('utf-8')
-        path = etf_payload[b'path'].decode('utf-8')
-        query_string = etf_payload[b'query'].decode('utf-8')
+        method = etf_payload.get(b'method', b'GET').decode('utf-8')
+        path = etf_payload.get(b'path', b'/').decode('utf-8')
+        query_string = etf_payload.get(b'query', b'').decode('utf-8')
         scheme = etf_payload.get(b'scheme', b'http').decode('utf-8')
         port = etf_payload.get(b'port', 80)
 
-        req_headers_etf = etf_payload.get(b'headers', [])
-        req_headers_asgi = []
-        for k_bin, v_bin in req_headers_etf:
-            req_headers_asgi.append((k_bin.lower(), v_bin))
-
+        req_headers_asgi = ASGIAdapter._parse_headers(etf_payload)
         body_bytes = etf_payload.get(b'body', b'')
 
         scope = {
@@ -58,7 +65,7 @@ class ASGIAdapter:
 
         response_state = {
             'status': 500,
-            'headers': [],
+            'headers': {},
             'body': b''
         }
 
@@ -71,9 +78,9 @@ class ASGIAdapter:
         async def send_http(message):
             if message['type'] == 'http.response.start':
                 response_state['status'] = message['status']
-                for k_bytes, v_bytes in message.get('headers', []):
-                    response_state['headers'].append({erlpack.atom_from_string(k_bytes.decode('latin-1')), erlpack.term_to_binary(v_bytes)})
-
+                for k_bytes, v_bytes in message.get('headers',[]):
+                    # Save as mapping so Erlang resolves as map instead of crashing Cowboy iterator
+                    response_state['headers'][k_bytes] = v_bytes
             elif message['type'] == 'http.response.body':
                 response_state['body'] += message.get('body', b'')
 
@@ -92,84 +99,12 @@ class ASGIAdapter:
 
     @staticmethod
     async def _handle_websocket_request(app, etf_payload):
-        # Decode Erlang-native types for WebSocket
-        path = etf_payload[b'path'].decode('utf-8')
-        query_string = etf_payload[b'query'].decode('utf-8')
-        scheme = etf_payload.get(b'scheme', b'ws').decode('utf-8') # 'ws' or 'wss'
-        port = etf_payload.get(b'port', 80)
-
-        req_headers_etf = etf_payload.get(b'headers', [])
-        req_headers_asgi = []
-        for k_bin, v_bin in req_headers_etf:
-            req_headers_asgi.append((k_bin.lower(), v_bin))
-
-        # This is for initial connection. Subsequent messages will be handled by dedicated handlers.
-        scope = {
-            'type': 'websocket',
-            'asgi': {'version': '3.0', 'spec_version': '2.1'},
-            'http_version': '1.1', # Initial handshake is HTTP/1.1
-            'scheme': scheme,
-            'path': path,
-            'raw_path': path.encode('latin-1'),
-            'query_string': query_string.encode('latin-1'),
-            'headers': req_headers_asgi,
-            'server': ('omnicorn', port),
-            'client': ('127.0.0.1', 0),
-            'subprotocols': [], # Could be passed from Erlang if client offers them
-            'state': {}, # ASGI spec defines this, but we don't manage state here
-        }
-
-        # WebSocket-specific response messages
-        response_event = {} # Stores the first message from the app (accept/close)
-
-        async def receive_websocket():
-            # Initial connection always starts with a 'connect' message
-            return {'type': 'websocket.connect'}
-
-        async def send_websocket(message):
-            # Store the first response message (websocket.accept or websocket.close)
-            # Subsequent messages (websocket.send) are handled by a separate path
-            response_event.update(message)
-
-        try:
-            await app(scope, receive_websocket, send_websocket)
-        except Exception:
-            sys.stderr.write(f"ASGI WebSocket App Error (handshake): {traceback.format_exc()}\n")
-            response_event = {'type': 'websocket.close', 'code': 1011} # Internal Error
-
-        # Return the handshake response to Erlang
-        # Erlang expects an Erlang map with status/headers for HTTP,
-        # but for WSGI, it needs a specific control message for "accept" or "close"
-        if response_event.get('type') == 'websocket.accept':
-            # WebSocket accepted, return a special term for Erlang
-            # Subprotocols could be negotiated here.
-            subprotocol = response_event.get('subprotocol')
-            return {b'websocket_handshake': b'accept', b'subprotocol': erlpack.pack(subprotocol) if subprotocol else b''}
-        elif response_event.get('type') == 'websocket.close':
-            # WebSocket rejected/closed
-            return {b'websocket_handshake': b'close', b'code': response_event.get('code', 1000)}
-        else:
-            return {b'websocket_handshake': b'error', b'code': 1001, b'reason': b"ASGI app sent unexpected message"}
-
-    @staticmethod
-    async def _handle_websocket_message(app, etf_payload):
-        """
-        Handles incoming WebSocket messages (text/binary) after the handshake.
-        This will be called by Erlang for active WebSocket connections.
-        """
-        # WebSocket connection info (same as initial handshake scope for context)
-        path = etf_payload[b'path'].decode('utf-8')
-        query_string = etf_payload[b'query'].decode('utf-8')
+        path = etf_payload.get(b'path', b'/').decode('utf-8')
+        query_string = etf_payload.get(b'query', b'').decode('utf-8')
         scheme = etf_payload.get(b'scheme', b'ws').decode('utf-8')
         port = etf_payload.get(b'port', 80)
 
-        req_headers_etf = etf_payload.get(b'headers', [])
-        req_headers_asgi = []
-        for k_bin, v_bin in req_headers_etf:
-            req_headers_asgi.append((k_bin.lower(), v_bin))
-
-        message_type = etf_payload.get(b'message_type') # b'text' or b'binary'
-        message_content = etf_payload.get(b'content') # binary or string
+        req_headers_asgi = ASGIAdapter._parse_headers(etf_payload)
 
         scope = {
             'type': 'websocket',
@@ -182,9 +117,58 @@ class ASGIAdapter:
             'headers': req_headers_asgi,
             'server': ('omnicorn', port),
             'client': ('127.0.0.1', 0),
-            'subprotocols': [],
-            'state': etf_payload.get(b'connection_state', {}), # Carry state if any
-            'websocket.client': etf_payload.get(b'client_info') # Client IP/Port tuple
+            'subprotocols':[],
+            'state': {},
+        }
+
+        response_event = {}
+
+        async def receive_websocket():
+            return {'type': 'websocket.connect'}
+
+        async def send_websocket(message):
+            response_event.update(message)
+
+        try:
+            await app(scope, receive_websocket, send_websocket)
+        except Exception:
+            sys.stderr.write(f"ASGI WebSocket App Error (handshake): {traceback.format_exc()}\n")
+            response_event = {'type': 'websocket.close', 'code': 1011}
+
+        if response_event.get('type') == 'websocket.accept':
+            subprotocol = response_event.get('subprotocol', b'')
+            return {b'websocket_handshake': b'accept', b'subprotocol': subprotocol}
+        elif response_event.get('type') == 'websocket.close':
+            return {b'websocket_handshake': b'close', b'code': response_event.get('code', 1000)}
+        else:
+            return {b'websocket_handshake': b'error', b'code': 1001, b'reason': b"ASGI app sent unexpected message"}
+
+    @staticmethod
+    async def _handle_websocket_message(app, etf_payload):
+        path = etf_payload.get(b'path', b'/').decode('utf-8')
+        query_string = etf_payload.get(b'query', b'').decode('utf-8')
+        scheme = etf_payload.get(b'scheme', b'ws').decode('utf-8')
+        port = etf_payload.get(b'port', 80)
+
+        req_headers_asgi = ASGIAdapter._parse_headers(etf_payload)
+
+        message_type = etf_payload.get(b'message_type')
+        message_content = etf_payload.get(b'content')
+
+        scope = {
+            'type': 'websocket',
+            'asgi': {'version': '3.0', 'spec_version': '2.1'},
+            'http_version': '1.1',
+            'scheme': scheme,
+            'path': path,
+            'raw_path': path.encode('latin-1'),
+            'query_string': query_string.encode('latin-1'),
+            'headers': req_headers_asgi,
+            'server': ('omnicorn', port),
+            'client': ('127.0.0.1', 0),
+            'subprotocols':[],
+            'state': etf_payload.get(b'connection_state', {}),
+            'websocket.client': etf_payload.get(b'client_info')
         }
 
         response_messages = asyncio.Queue()
@@ -195,7 +179,7 @@ class ASGIAdapter:
             elif message_type == b'binary':
                 return {'type': 'websocket.receive', 'bytes': message_content}
             else:
-                return {'type': 'websocket.disconnect', 'code': 1000} # Default close
+                return {'type': 'websocket.disconnect', 'code': 1000}
 
         async def send_websocket_message(message):
             await response_messages.put(message)
@@ -206,13 +190,11 @@ class ASGIAdapter:
             sys.stderr.write(f"ASGI WebSocket App Error (message): {traceback.format_exc()}\n")
             await response_messages.put({'type': 'websocket.close', 'code': 1011})
 
-        # Collect all messages sent by the ASGI app
-        output_messages = []
+        output_messages =[]
         while not response_messages.empty():
             output_messages.append(response_messages.get_nowait())
 
-        # Transform messages for Erlang
-        erlang_responses = []
+        erlang_responses =[]
         for msg in output_messages:
             if msg['type'] == 'websocket.send':
                 if 'text' in msg:
@@ -226,19 +208,12 @@ class ASGIAdapter:
 
     @staticmethod
     async def _handle_websocket_disconnect(app, etf_payload):
-        """
-        Handles incoming WebSocket disconnect events.
-        """
-        path = etf_payload[b'path'].decode('utf-8')
-        query_string = etf_payload[b'query'].decode('utf-8')
+        path = etf_payload.get(b'path', b'/').decode('utf-8')
+        query_string = etf_payload.get(b'query', b'').decode('utf-8')
         scheme = etf_payload.get(b'scheme', b'ws').decode('utf-8')
         port = etf_payload.get(b'port', 80)
 
-        req_headers_etf = etf_payload.get(b'headers', [])
-        req_headers_asgi = []
-        for k_bin, v_bin in req_headers_etf:
-            req_headers_asgi.append((k_bin.lower(), v_bin))
-
+        req_headers_asgi = ASGIAdapter._parse_headers(etf_payload)
         code = etf_payload.get(b'code', 1000)
 
         scope = {
@@ -252,7 +227,7 @@ class ASGIAdapter:
             'headers': req_headers_asgi,
             'server': ('omnicorn', port),
             'client': ('127.0.0.1', 0),
-            'subprotocols': [],
+            'subprotocols':[],
             'state': etf_payload.get(b'connection_state', {}),
             'websocket.client': etf_payload.get(b'client_info')
         }
@@ -261,7 +236,7 @@ class ASGIAdapter:
             return {'type': 'websocket.disconnect', 'code': code}
 
         async def send_websocket_disconnect(message):
-            pass # No outgoing messages expected on disconnect
+            pass
 
         try:
             await app(scope, receive_websocket_disconnect, send_websocket_disconnect)
