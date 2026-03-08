@@ -17,13 +17,17 @@
 }).
 
 start_link(AppModule, Id) ->
-    gen_server:start_link(?MODULE, [AppModule, Id], []).
+    gen_server:start_link(?MODULE, [AppModule, Id],[]).
 
 call_python(Pid, Type, Payload) ->
     TimeoutStr = os:getenv("OMNICORN_TIMEOUT", "5000"),
     Timeout = list_to_integer(TimeoutStr),
-    try gen_server:call(Pid, {request, Type, Payload}, Timeout)
-    catch exit:{timeout, _} -> {error, timeout} end.
+    try gen_server:call(Pid, {request, Type, Payload}, Timeout) of
+        Result -> {ok, Result}
+    catch
+        exit:{timeout, _} -> {error, timeout};
+        exit:Reason -> {error, Reason}
+    end.
 
 %% ===================================================================
 %% GenServer Implementation
@@ -32,29 +36,23 @@ call_python(Pid, Type, Payload) ->
 init([AppModule, Id]) ->
     process_flag(trap_exit, true),
 
-    %% 1. Create a unique UDS Path in /tmp
-    SocketPath = lists:flatten(io_lib:format("/tmp/omnicorn_~p_~p.sock", [os:getpid(), Id])),
-    file:delete(SocketPath), % Ensure it doesn't exist
+    SocketPath = lists:flatten(io_lib:format("/tmp/omnicorn_~p_~p.sock",[os:getpid(), Id])),
+    file:delete(SocketPath),
 
-    %% 2. Listen on UDS (Local Domain Socket)
-    %% {packet, 4} automatically handles our 4-byte header logic!
-    case gen_tcp:listen(0, [{ifaddr, {local, SocketPath}}, {mode, binary}, {packet, 4}, {active, true}]) of
+    case gen_tcp:listen(0,[{ifaddr, {local, SocketPath}}, {mode, binary}, {packet, 4}, {active, true}]) of
         {ok, LSock} ->
-            %% 3. Start Python, passing the socket path
-            %% We do NOT use {packet, 4} on the Port anymore, it's just raw text logs now.
             Cmd = "python3 -m omnicorn.worker " ++ binary_to_list(AppModule),
-            Port = open_port({spawn, Cmd}, [
+            Port = open_port({spawn, Cmd},[
                 binary,
                 exit_status,
                 use_stdio,
                 stderr_to_stdout,
-                {env, [{"OMNICORN_SOCK", SocketPath}]}
+                {env,[{"OMNICORN_SOCK", SocketPath}]}
             ]),
 
-            %% 4. Wait for Python to connect (Blocking accept with timeout)
-            %% In a high-scale system we would do async_accept, but for worker spawning
-            %% a 5s block during init is acceptable safety.
-            case gen_tcp:accept(LSock, 5000) of
+            %% We use a custom wait loop so we can print Python syntax/import errors to the console
+            %% in real-time if Python crashes during boot! (50 retries * 100ms = 5000ms timeout)
+            case wait_for_connection(LSock, Port, 50) of
                 {ok, DataSocket} ->
                     {ok, #state{
                         log_port = Port,
@@ -64,22 +62,45 @@ init([AppModule, Id]) ->
                         worker_id = Id
                     }};
                 {error, Reason} ->
-                    io:format("Python failed to connect to UDS: ~p~n", [Reason]),
-                    {stop, python_connection_timeout}
+                    io:format("🔥 Python Worker ~p failed to boot: ~p~n", [Id, Reason]),
+                    {stop, Reason}
             end;
 
         {error, Reason} ->
-            io:format("Failed to create UDS listener: ~p~n", [Reason]),
+            io:format("Failed to create UDS listener: ~p~n",[Reason]),
             {stop, socket_create_error}
     end.
+
+%% Helper function to poll the socket while reading Python's boot logs
+wait_for_connection(LSock, Port, Retries) when Retries > 0 ->
+    case gen_tcp:accept(LSock, 100) of
+        {ok, DataSocket} ->
+            {ok, DataSocket};
+        {error, timeout} ->
+            %% Check if Python printed an error or died while we were waiting
+            receive
+                {Port, {data, LogLine}} ->
+                    io:format("[PYTHON-BOOT] ~s", [LogLine]),
+                    wait_for_connection(LSock, Port, Retries - 1);
+                {Port, {exit_status, Status}} ->
+                    io:format("🔥 Python process died immediately with status ~p~n", [Status]),
+                    {error, python_crashed_on_boot}
+            after 0 ->
+                %% No logs, just keep waiting
+                wait_for_connection(LSock, Port, Retries - 1)
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end;
+wait_for_connection(_, _, 0) ->
+    {error, connection_timeout}.
 
 handle_call({request, Type, Payload}, From, State) ->
     ReqId = erlang:phash2(erlang:make_ref()),
     Message = #{<<"id">> => ReqId, <<"type">> => Type, <<"payload">> => Payload},
-    JsonPacket = jsone:encode(Message),
 
-    %% Send via UDS Socket
-    gen_tcp:send(State#state.data_socket, JsonPacket),
+    Packet = term_to_binary(Message),
+    gen_tcp:send(State#state.data_socket, Packet),
 
     NewReqs = maps:put(ReqId, From, State#state.requests),
     {noreply, State#state{requests = NewReqs}}.
@@ -89,38 +110,103 @@ handle_cast(_Msg, State) ->
 
 %% --- DATA PLANE (UDS Socket) ---
 handle_info({tcp, _Socket, Data}, State) ->
-    try jsone:decode(Data) of
+    try binary_to_term(Data) of
         Decoded ->
+            %% 1. Is this a Worker Handshake?
             case maps:get(<<"status">>, Decoded, undefined) of
                 <<"ready">> ->
                     omn_router:checkin_worker(self()),
                     {noreply, State};
                 _ ->
-                    ReqId = maps:get(<<"id">>, Decoded),
-                    ResultData = maps:get(<<"data">>, Decoded),
-                    case maps:take(ReqId, State#state.requests) of
-                        {From, NewReqs} ->
-                            gen_server:reply(From, ResultData),
-                            omn_router:checkin_worker(self()),
-                            {noreply, State#state{requests = NewReqs}};
-                        error ->
-                            {noreply, State}
+                    %% 2. Is this an RPC call from Python to Erlang?
+                    case maps:get(<<"type">>, Decoded, undefined) of
+                        <<"ets_get">> ->
+                            Payload = maps:get(<<"payload">>, Decoded),
+                            Key = maps:get(<<"key">>, Payload),
+                            ReqId = maps:get(<<"id">>, Decoded),
+                            Now = erlang:system_time(millisecond),
+
+                            %% ETS stores tuples: {Key, Value, ExpireAt}
+                            Value = case ets:lookup(omnicorn_cache, Key) of[{Key, Val, ExpireAt}] ->
+                                    if
+                                        ExpireAt == 0 -> Val; %% No TTL
+                                        Now =< ExpireAt -> Val; %% Valid TTL
+                                        true ->
+                                            ets:delete(omnicorn_cache, Key), %% Expired! Evict it.
+                                            nil
+                                    end;[] -> nil
+                            end,
+
+                            Packet = term_to_binary(#{<<"id">> => ReqId, <<"type">> => <<"ets_reply">>, <<"data">> => Value}),
+                            gen_tcp:send(State#state.data_socket, Packet),
+                            {noreply, State};
+
+                        <<"ets_set">> ->
+                            Payload = maps:get(<<"payload">>, Decoded),
+                            Key = maps:get(<<"key">>, Payload),
+                            Val = maps:get(<<"value">>, Payload),
+                            TTL = maps:get(<<"ttl">>, Payload, 0), %% TTL in milliseconds
+                            ReqId = maps:get(<<"id">>, Decoded),
+
+                            ExpireAt = if TTL > 0 -> erlang:system_time(millisecond) + TTL; true -> 0 end,
+                            ets:insert(omnicorn_cache, {Key, Val, ExpireAt}),
+
+                            Packet = term_to_binary(#{<<"id">> => ReqId, <<"type">> => <<"ets_reply">>, <<"data">> => <<"ok">>}),
+                            gen_tcp:send(State#state.data_socket, Packet),
+                            {noreply, State};
+
+                        <<"ets_delete">> ->
+                            Payload = maps:get(<<"payload">>, Decoded),
+                            Key = maps:get(<<"key">>, Payload),
+                            ReqId = maps:get(<<"id">>, Decoded),
+
+                            ets:delete(omnicorn_cache, Key),
+
+                            Packet = term_to_binary(#{<<"id">> => ReqId, <<"type">> => <<"ets_reply">>, <<"data">> => <<"ok">>}),
+                            gen_tcp:send(State#state.data_socket, Packet),
+                            {noreply, State};
+
+                        <<"ets_incr">> ->
+                            Payload = maps:get(<<"payload">>, Decoded),
+                            Key = maps:get(<<"key">>, Payload),
+                            Amount = maps:get(<<"amount">>, Payload, 1),
+                            ReqId = maps:get(<<"id">>, Decoded),
+
+                            %% NATIVE SUPERPOWER: Lock-free atomic increment.
+                            %% If key doesn't exist, it defaults to {Key, 0, 0} and increments from there!
+                            NewVal = try ets:update_counter(omnicorn_cache, Key, {2, Amount}, {Key, 0, 0})
+                                     catch _:_ -> nil end,
+
+                            Packet = term_to_binary(#{<<"id">> => ReqId, <<"type">> => <<"ets_reply">>, <<"data">> => NewVal}),
+                            gen_tcp:send(State#state.data_socket, Packet),
+                            {noreply, State};
+
+                        %% 3. Catch-all: This is a Response from Python returning to an Erlang HTTP/WS Request
+                        _ ->
+                            ReqId = maps:get(<<"id">>, Decoded),
+                            ResultData = maps:get(<<"data">>, Decoded, #{}),
+                            case maps:take(ReqId, State#state.requests) of
+                                {From, NewReqs} ->
+                                    gen_server:reply(From, ResultData),
+                                    omn_router:checkin_worker(self()),
+                                    {noreply, State#state{requests = NewReqs}};
+                                error ->
+                                    {noreply, State}
+                            end
                     end
             end
     catch
-        _:_ ->
-            io:format("JSON Decode Error in Worker ~p~n", [State#state.worker_id]),
+        _:Err ->
+            io:format("ETF Decode Error in Worker ~p: ~p~n",[State#state.worker_id, Err]),
             {noreply, State}
     end;
 
 handle_info({tcp_closed, _Socket}, State) ->
-    io:format("[Omnicorn] Worker ~p Data Connection Closed~n", [State#state.worker_id]),
+    io:format("[Omnicorn] Worker ~p Data Connection Closed~n",[State#state.worker_id]),
     {stop, normal, State};
 
-%% --- CONTROL PLANE (Logging from Python Stdout) ---
 handle_info({Port, {data, LogLine}}, State = #state{log_port=Port}) ->
-    %% Python print() statements land here. We just log them.
-    io:format("[PYTHON-LOG ~p] ~s", [State#state.worker_id, LogLine]),
+    io:format("[PYTHON-LOG ~p] ~s",[State#state.worker_id, LogLine]),
     {noreply, State};
 
 handle_info({Port, {exit_status, Status}}, State = #state{log_port=Port}) ->
@@ -132,7 +218,6 @@ handle_info(Info, State) ->
     {noreply, State}.
 
 terminate(_Reason, State) ->
-    %% Clean up resources
     gen_tcp:close(State#state.data_socket),
     gen_tcp:close(State#state.listener),
     file:delete(State#state.socket_path),
