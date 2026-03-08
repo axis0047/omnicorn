@@ -1,64 +1,41 @@
 import struct
-import json
 import sys
-import io
-import socket
+import erlpack
+import asyncio
 
-class Protocol:
-    # 4 byte unsigned int, big endian
+class AsyncProtocol:
     HEADER_STRUCT = struct.Struct('>I')
     HEADER_SIZE = 4
 
     @staticmethod
-    def read(sock):
-        """
-        Reads a length-prefixed message from a socket.
-        """
+    async def read(reader: asyncio.StreamReader):
+        """Asynchronously reads a length-prefixed ETF message."""
         try:
-            # 1. Read Length Header
-            raw_len = Protocol._recv_exact(sock, Protocol.HEADER_SIZE)
-            if not raw_len:
-                return None # EOF
+            raw_len = await reader.readexactly(AsyncProtocol.HEADER_SIZE)
+            msg_len = AsyncProtocol.HEADER_STRUCT.unpack(raw_len)[0]
 
-            msg_len = Protocol.HEADER_STRUCT.unpack(raw_len)[0]
+            payload_bytes = await reader.readexactly(msg_len)
+            return erlpack.unpack(payload_bytes)
 
-            # 2. Read Payload
-            payload_bytes = Protocol._recv_exact(sock, msg_len)
-            if not payload_bytes:
-                return None
-
-            # 3. Decode JSON
-            # In Phase 3, we will swap json.loads for erlpack.unpack here
-            return json.loads(payload_bytes.decode('utf-8'))
-
-        except (struct.error, json.JSONDecodeError, OSError) as e:
-            sys.stderr.write(f"Protocol Error: {e}\n")
+        except asyncio.IncompleteReadError:
+            return None # EOF or Connection Closed
+        except struct.error as e:
+            sys.stderr.write(f"Protocol Struct Error: {e}\n")
+            return None
+        except Exception as e:
+            sys.stderr.write(f"Protocol Decode Error: {e}\n")
             return None
 
     @staticmethod
-    def write(sock, data):
-        """
-        Writes a length-prefixed JSON message to a socket.
-        """
+    async def write(writer: asyncio.StreamWriter, write_lock: asyncio.Lock, data: dict):
+        """Asynchronously and safely writes an ETF message to the multiplexed socket."""
         try:
-            # 1. Encode JSON
-            payload = json.dumps(data).encode('utf-8')
+            payload = erlpack.pack(data)
+            header = AsyncProtocol.HEADER_STRUCT.pack(len(payload))
 
-            # 2. Create Header
-            header = Protocol.HEADER_STRUCT.pack(len(payload))
-
-            # 3. Send
-            sock.sendall(header + payload)
-        except OSError:
-            sys.exit(1)
-
-    @staticmethod
-    def _recv_exact(sock, n):
-        """Helper to ensure we get exactly N bytes"""
-        data = b''
-        while len(data) < n:
-            chunk = sock.recv(n - len(data))
-            if not chunk:
-                return None
-            data += chunk
-        return data
+            # Lock ensures multiple concurrent requests don't interleave byte streams!
+            async with write_lock:
+                writer.write(header + payload)
+                await writer.drain()
+        except Exception as e:
+            sys.stderr.write(f"Protocol Encode Error: {e}\n")

@@ -1,7 +1,6 @@
 -module(omn_http).
 -export([init/2]).
 
-%% ANSI Colors for Terminal Output
 -define(RESET,   "\e[0m").
 -define(RED,     "\e[31m").
 -define(GREEN,   "\e[32m").
@@ -9,14 +8,12 @@
 -define(CYAN,    "\e[36m").
 
 init(Req, State) ->
-    %% 1. Start Timer for Latency Tracking
     StartTime = erlang:monotonic_time(microsecond),
 
-    %% 2. Read Body
     {ok, Body, Req2} = read_body(Req, <<>>),
 
-    %% 3. Prepare Payload
     Payload = #{
+        <<"scope_type">> => <<"http">>,
         <<"method">> => cowboy_req:method(Req2),
         <<"path">> => cowboy_req:path(Req2),
         <<"query">> => cowboy_req:qs(Req2),
@@ -26,22 +23,20 @@ init(Req, State) ->
         <<"port">> => cowboy_req:port(Req2)
     },
 
-    %% 4. Get Worker & Execute
     Response = case omn_router:checkout_worker() of
         {ok, WorkerPid} ->
             case omn_worker:call_python(WorkerPid, <<"http">>, Payload) of
+                {ok, Res} -> Res;
                 {error, timeout} ->
                     exit(WorkerPid, kill),
-                    gateway_timeout();
-                WorkerResponse ->
-                    WorkerResponse
+                    #{<<"status">> => 504, <<"body">> => <<"Gateway Timeout">>};
+                {error, _} ->
+                    #{<<"status">> => 502, <<"body">> => <<"Bad Gateway">>}
             end;
         {error, empty} ->
-            service_unavailable()
+            #{<<"status">> => 503, <<"body">> => <<"Service Unavailable">>}
     end,
 
-    %% 5. Extract Status and Send Reply
-    %% Ensure Status is an integer
     Status = case maps:get(<<"status">>, Response, 500) of
         S when is_binary(S) -> binary_to_integer(S);
         S -> S
@@ -50,57 +45,38 @@ init(Req, State) ->
     Headers = maps:get(<<"headers">>, Response, #{}),
     RespBody = maps:get(<<"body">>, Response, <<>>),
 
-    Req3 = cowboy_req:reply(Status, Headers, RespBody, Req2),
+    %% Convert Atom keys to Binary, and strictly LOWERCASE them!
+    %% Cowboy 2.0+ strictly enforces HTTP/2 rules which dictate all lowercase keys.
+    CowboyHeaders = maps:fold(fun(K, V, Acc) ->
+        BinK = if is_atom(K) -> atom_to_binary(K, utf8); true -> K end,
+        LowerK = string:lowercase(BinK),
 
-    %% 6. Log to Terminal
+        %% Also ensure values are binaries (Flask might return ints)
+        BinV = if
+            is_integer(V) -> integer_to_binary(V);
+            is_list(V) -> iolist_to_binary(V);
+            is_atom(V) -> atom_to_binary(V, utf8);
+            true -> V
+        end,
+        Acc#{LowerK => BinV}
+    end, #{}, Headers),
+
+    Req3 = cowboy_req:reply(Status, CowboyHeaders, RespBody, Req2),
+
     EndTime = erlang:monotonic_time(microsecond),
-    LatencyUs = EndTime - StartTime,
-    log_request(Req3, Status, LatencyUs),
+    log_request(Req3, Status, EndTime - StartTime),
 
     {ok, Req3, State}.
 
-%% ===================================================================
-%% Internal Helpers
-%% ===================================================================
-
-%% Recursively read body chunks
 read_body(Req, Acc) ->
     case cowboy_req:read_body(Req) of
         {ok, Data, Req2} -> {ok, <<Acc/binary, Data/binary>>, Req2};
         {more, Data, Req2} -> read_body(Req2, <<Acc/binary, Data/binary>>)
     end.
 
-%% Standard Error Responses
-gateway_timeout() ->
-    #{<<"status">> => 504, <<"body">> => <<"504 Gateway Timeout">>}.
-
-service_unavailable() ->
-    #{<<"status">> => 503, <<"body">> => <<"503 Service Unavailable">>}.
-
-%% ===================================================================
-%% Logging Logic
-%% ===================================================================
-
 log_request(Req, Status, LatencyUs) ->
     Method = cowboy_req:method(Req),
     Path = cowboy_req:path(Req),
-
-    %% Format Timestamp: [YYYY-MM-DD HH:MM:SS]
-    {{Y,M,D},{H,Min,S}} = calendar:local_time(),
-    TimeStr = io_lib:format("~4..0w-~2..0w-~2..0w ~2..0w:~2..0w:~2..0w",
-                            [Y,M,D,H,Min,S]),
-
-    %% Format Latency (ms)
     LatencyMs = LatencyUs / 1000.0,
-
-    %% Determine Color based on Status Code
-    Color = if
-        Status >= 500 -> ?RED;
-        Status >= 400 -> ?YELLOW;
-        Status >= 300 -> ?CYAN;
-        true -> ?GREEN
-    end,
-
-    %% Print to Stdout: [Time] "METHOD /path" STATUS - Latency
-    io:format("[~s] \"~s ~s\" ~s~p~s - ~.2fms~n",
-              [TimeStr, Method, Path, Color, Status, ?RESET, LatencyMs]).
+    Color = if Status >= 500 -> ?RED; Status >= 400 -> ?YELLOW; true -> ?GREEN end,
+    io:format("[HTTP] \"~s ~s\" ~s~p~s - ~.2fms~n",[Method, Path, Color, Status, ?RESET, LatencyMs]).

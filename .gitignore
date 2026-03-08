@@ -1,4 +1,5 @@
 test_app.py
+concat_project.sh
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

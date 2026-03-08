@@ -1,83 +1,150 @@
 import asyncio
 import sys
+import traceback
+
+WS_CONNECTIONS = {}
 
 class ASGIAdapter:
     @staticmethod
-    def run(app, payload):
-        """
-        Runs an ASGI app for a single request using a transient Event Loop.
-        """
-        # Create a new loop for this request to ensure isolation
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            return loop.run_until_complete(ASGIAdapter._run_async(app, payload))
-        finally:
-            loop.close()
+    async def run_phase(app, msg_type, etf_payload):
+        if msg_type == b'http':
+            return await ASGIAdapter._handle_http_request(app, etf_payload)
+        elif msg_type == b'websocket_handshake':
+            return await ASGIAdapter._handle_websocket_handshake(app, etf_payload)
+        elif msg_type == b'websocket_message':
+            return await ASGIAdapter._handle_websocket_message(app, etf_payload)
+        elif msg_type == b'websocket_disconnect':
+            return await ASGIAdapter._handle_websocket_disconnect(app, etf_payload)
+        else:
+            return {b'status': 500, b'body': b"Unknown ASGI phase"}
 
     @staticmethod
-    async def _run_async(app, payload):
-        # 1. Prepare Data
-        body_str = payload.get('body', '')
-        body_bytes = body_str.encode('utf-8') if isinstance(body_str, str) else body_str
+    def _parse_headers(etf_payload):
+        req_headers_etf = etf_payload.get(b'headers', {})
+        req_headers_asgi =[]
+        header_items = req_headers_etf.items() if isinstance(req_headers_etf, dict) else req_headers_etf
 
-        # Headers must be list of [bytes, bytes]
-        headers = []
-        for k, v in payload.get('headers', {}).items():
-            headers.append([k.lower().encode('latin-1'), str(v).encode('latin-1')])
+        for k_bin, v_bin in header_items:
+            k_bytes = k_bin if isinstance(k_bin, bytes) else str(k_bin).encode('utf-8')
+            v_bytes = v_bin if isinstance(v_bin, bytes) else str(v_bin).encode('utf-8')
+            req_headers_asgi.append((k_bytes.lower(), v_bytes))
+        return req_headers_asgi
 
-        # 2. Scope
+    @staticmethod
+    async def _handle_http_request(app, etf_payload):
+        # (Same implementation as previous file, keep exactly as is)
+        method = etf_payload.get(b'method', b'GET').decode('utf-8')
+        path = etf_payload.get(b'path', b'/').decode('utf-8')
+        query_string = etf_payload.get(b'query', b'').decode('utf-8')
+        scheme = etf_payload.get(b'scheme', b'http').decode('utf-8')
+        port = etf_payload.get(b'port', 80)
+
+        req_headers_asgi = ASGIAdapter._parse_headers(etf_payload)
+        body_bytes = etf_payload.get(b'body', b'')
+
         scope = {
-            'type': 'http',
-            'asgi': {'version': '3.0', 'spec_version': '2.1'},
-            'http_version': '1.1',
-            'server': ('omnicorn', payload.get('port', 80)),
-            'client': ('127.0.0.1', 0),
-            'scheme': payload.get('scheme', 'http'),
-            'method': payload.get('method', 'GET'),
-            'path': payload.get('path', '/'),
-            'raw_path': payload.get('path', '/').encode('latin-1'),
-            'query_string': payload.get('query', '').encode('latin-1'),
-            'headers': headers,
+            'type': 'http', 'asgi': {'version': '3.0', 'spec_version': '2.1'},
+            'http_version': '1.1', 'method': method, 'scheme': scheme,
+            'path': path, 'raw_path': path.encode('latin-1'),
+            'query_string': query_string.encode('latin-1'),
+            'headers': req_headers_asgi, 'server': ('omnicorn', port), 'client': ('127.0.0.1', 0),
         }
 
-        # 3. Response State
-        response_state = {
-            'status': 200,
-            'headers': {},
-            'body': b''
-        }
+        response_state = {'status': 500, 'headers': {}, 'body': b''}
+        input_queue = asyncio.Queue()
+        input_queue.put_nowait({'type': 'http.request', 'body': body_bytes, 'more_body': False})
 
-        # 4. Channels
-        # Pre-fill receive queue with the single body chunk (non-streaming for v1)
-        receive_queue = asyncio.Queue()
-        await receive_queue.put({
-            'type': 'http.request',
-            'body': body_bytes,
-            'more_body': False
-        })
-
-        async def receive():
-            return await receive_queue.get()
-
-        async def send(message):
+        async def receive_http(): return await input_queue.get()
+        async def send_http(message):
             if message['type'] == 'http.response.start':
                 response_state['status'] = message['status']
-                for k, v in message.get('headers', []):
-                    response_state['headers'][k.decode('latin-1')] = v.decode('latin-1')
+                for k_bytes, v_bytes in message.get('headers',[]):
+                    response_state['headers'][k_bytes] = v_bytes
             elif message['type'] == 'http.response.body':
                 response_state['body'] += message.get('body', b'')
 
-        # 5. Run App
         try:
-            await app(scope, receive, send)
-        except Exception as e:
-            # Handle app crash
+            await app(scope, receive_http, send_http)
+        except Exception:
+            sys.stderr.write(f"ASGI HTTP App Error:\n{traceback.format_exc()}\n")
             response_state['status'] = 500
-            response_state['body'] = f"Internal Server Error: {str(e)}".encode('utf-8')
+            response_state['body'] = b"Internal Server Error: HTTP"
 
-        return {
-            'status': response_state['status'],
-            'headers': response_state['headers'],
-            'body': response_state['body'].decode('utf-8', errors='replace')
+        return {b'status': response_state['status'], b'headers': response_state['headers'], b'body': response_state['body']}
+
+    @staticmethod
+    async def _handle_websocket_handshake(app, etf_payload):
+        req_id = etf_payload.get(b'id', 0)
+        path = etf_payload.get(b'path', b'/').decode('utf-8')
+        query_string = etf_payload.get(b'query', b'').decode('utf-8')
+        scheme = etf_payload.get(b'scheme', b'ws').decode('utf-8')
+        port = etf_payload.get(b'port', 80)
+        req_headers_asgi = ASGIAdapter._parse_headers(etf_payload)
+
+        scope = {
+            'type': 'websocket', 'asgi': {'version': '3.0', 'spec_version': '2.1'},
+            'http_version': '1.1', 'scheme': scheme, 'path': path, 'raw_path': path.encode('latin-1'),
+            'query_string': query_string.encode('latin-1'), 'headers': req_headers_asgi,
+            'server': ('omnicorn', port), 'client': ('127.0.0.1', 0), 'subprotocols':[], 'state': {},
         }
+
+        receive_queue = asyncio.Queue()
+        send_queue = asyncio.Queue()
+        receive_queue.put_nowait({'type': 'websocket.connect'})
+
+        WS_CONNECTIONS[req_id] = {'receive_queue': receive_queue, 'send_queue': send_queue}
+
+        # Spawn the ASGI App in the background!
+        task = asyncio.create_task(app(scope, receive_queue.get, send_queue.put))
+        WS_CONNECTIONS[req_id]['task'] = task
+
+        try:
+            response_event = await asyncio.wait_for(send_queue.get(), timeout=3.0)
+        except asyncio.TimeoutError:
+            return {b'websocket_handshake': b'error', b'code': 1001, b'reason': b"Handshake timeout"}
+
+        if response_event.get('type') == 'websocket.accept':
+            return {b'websocket_handshake': b'accept', b'subprotocol': response_event.get('subprotocol', b'')}
+        elif response_event.get('type') == 'websocket.close':
+            return {b'websocket_handshake': b'close', b'code': response_event.get('code', 1000)}
+        else:
+            return {b'websocket_handshake': b'error', b'code': 1002, b'reason': b"Invalid handshake message"}
+
+    @staticmethod
+    async def _handle_websocket_message(app, etf_payload):
+        req_id = etf_payload.get(b'id', 0)
+        conn = WS_CONNECTIONS.get(req_id)
+        if not conn: return {b'websocket_message_response':[], b'connection_state': {}}
+
+        msg_type = etf_payload.get(b'message_type')
+        content = etf_payload.get(b'content')
+
+        if msg_type == b'text':
+            conn['receive_queue'].put_nowait({'type': 'websocket.receive', 'text': content.decode('utf-8')})
+        elif msg_type == b'binary':
+            conn['receive_queue'].put_nowait({'type': 'websocket.receive', 'bytes': content})
+
+        # Because worker is fully async, this NO LONGER blocks the worker!
+        await asyncio.sleep(0.005)
+
+        erlang_responses = []
+        while not conn['send_queue'].empty():
+            msg = conn['send_queue'].get_nowait()
+            if msg['type'] == 'websocket.send':
+                if 'text' in msg:
+                    erlang_responses.append({b'type': b'send_text', b'content': msg['text'].encode('utf-8')})
+                elif 'bytes' in msg:
+                    erlang_responses.append({b'type': b'send_binary', b'content': msg['bytes']})
+            elif msg['type'] == 'websocket.close':
+                erlang_responses.append({b'type': b'close', b'code': msg.get('code', 1000)})
+
+        return {b'websocket_message_response': erlang_responses, b'connection_state': {}}
+
+    @staticmethod
+    async def _handle_websocket_disconnect(app, etf_payload):
+        req_id = etf_payload.get(b'id', 0)
+        conn = WS_CONNECTIONS.get(req_id)
+        if conn:
+            conn['receive_queue'].put_nowait({'type': 'websocket.disconnect', 'code': etf_payload.get(b'code', 1000)})
+            del WS_CONNECTIONS[req_id]
+        return {b'websocket_disconnect_response': b'ok'}

@@ -5,40 +5,43 @@ class WSGIAdapter:
     @staticmethod
     def run(app, payload):
         """
-        Translates Omnicorn JSON payload to WSGI Environ and runs the app.
+        Translates Omnicorn ETF payload to WSGI Environ and runs the app.
         """
         # 1. Decode Body
-        body_str = payload.get('body', '')
+        body_str = payload.get(b'body', b'')
         if isinstance(body_str, str):
             body_bytes = body_str.encode('utf-8')
         else:
             body_bytes = body_str
 
-        # 2. Construct WSGI Environ
+        # 2. Construct WSGI Environ using byte keys
         environ = {
             'wsgi.version': (1, 0),
-            'wsgi.url_scheme': payload.get('scheme', 'http'),
+            'wsgi.url_scheme': payload.get(b'scheme', b'http').decode('utf-8'),
             'wsgi.input': io.BytesIO(body_bytes),
             'wsgi.errors': sys.stderr,
             'wsgi.multithread': False,
             'wsgi.multiprocess': True,
             'wsgi.run_once': False,
-            'REQUEST_METHOD': payload.get('method', 'GET'),
+            'REQUEST_METHOD': payload.get(b'method', b'GET').decode('utf-8'),
             'SCRIPT_NAME': '',
-            'PATH_INFO': payload.get('path', '/'),
-            'QUERY_STRING': payload.get('query', ''),
+            'PATH_INFO': payload.get(b'path', b'/').decode('utf-8'),
+            'QUERY_STRING': payload.get(b'query', b'').decode('utf-8'),
             'SERVER_NAME': 'omnicorn',
-            'SERVER_PORT': str(payload.get('port', 80)),
+            'SERVER_PORT': str(payload.get(b'port', 80)),
             'SERVER_PROTOCOL': 'HTTP/1.1',
         }
 
         content_length = str(len(body_bytes))
         environ['CONTENT_LENGTH'] = content_length
 
-        # 3. Process Headers
-        # HTTP_ variables, Content-Type, Content-Length
-        req_headers = payload.get('headers', {})
-        for k, v in req_headers.items():
+        # 3. Process Headers - Safely iterate dicts translated from Erlang Maps
+        req_headers = payload.get(b'headers', {})
+        header_items = req_headers.items() if isinstance(req_headers, dict) else req_headers
+        for k, v in header_items:
+            if isinstance(k, bytes): k = k.decode('utf-8')
+            if isinstance(v, bytes): v = v.decode('utf-8')
+
             key = k.upper().replace('-', '_')
             if key == 'CONTENT_TYPE':
                 environ['CONTENT_TYPE'] = v
@@ -51,7 +54,7 @@ class WSGIAdapter:
         response = {
             'status': 500,
             'headers': {},
-            'body': []
+            'body':[]
         }
 
         def start_response(status, headers, exc_info=None):
@@ -68,8 +71,6 @@ class WSGIAdapter:
                 code = 500
 
             response['status'] = code
-            # Convert list of tuples to dict for JSON transfer
-            # (In production, use list of lists to support duplicate headers)
             for k, v in headers:
                 response['headers'][k] = v
 
@@ -87,8 +88,13 @@ class WSGIAdapter:
         # 6. Finalize
         full_body = b''.join(response['body'])
 
+        # Maps headers back into dictionary with bytes format to prevent Cowboy looping crashes
         return {
-            'status': response['status'],
-            'headers': response['headers'],
-            'body': full_body.decode('utf-8', errors='replace')
+            b'status': response['status'],
+            b'headers': {
+                k.encode('utf-8') if isinstance(k, str) else k:
+                v.encode('utf-8') if isinstance(v, str) else v
+                for k, v in response['headers'].items()
+            },
+            b'body': full_body
         }
