@@ -41,7 +41,7 @@ def main(app_path, config, workers, port):
     erl_src_dir = os.path.join(pkg_dir, 'erl_src')
     release_bin = os.path.join(erl_src_dir, '_build', 'default', 'rel', 'omnicorn', 'bin', 'omnicorn')
 
-    print(f"\n🦄 Omnicorn v1.2.0 (Resilient)")
+    print(f"\n🦄 Omnicorn v0.1.0 (Unstable)")
     print(f"-----------------------------------")
     print(f"🐍 App:         {conf['upstream']['app_path']}")
     print(f"🛡️  Tolerance:   {conf['workers']['max_restarts']} crashes / {conf['workers']['restart_period']}s")

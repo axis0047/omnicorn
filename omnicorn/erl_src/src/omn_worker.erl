@@ -50,7 +50,9 @@ init([AppModule, Id]) ->
                 {env,[{"OMNICORN_SOCK", SocketPath}]}
             ]),
 
-            case gen_tcp:accept(LSock, 5000) of
+            %% We use a custom wait loop so we can print Python syntax/import errors to the console
+            %% in real-time if Python crashes during boot! (50 retries * 100ms = 5000ms timeout)
+            case wait_for_connection(LSock, Port, 50) of
                 {ok, DataSocket} ->
                     {ok, #state{
                         log_port = Port,
@@ -60,14 +62,38 @@ init([AppModule, Id]) ->
                         worker_id = Id
                     }};
                 {error, Reason} ->
-                    io:format("Python failed to connect to UDS: ~p~n", [Reason]),
-                    {stop, python_connection_timeout}
+                    io:format("🔥 Python Worker ~p failed to boot: ~p~n", [Id, Reason]),
+                    {stop, Reason}
             end;
 
         {error, Reason} ->
             io:format("Failed to create UDS listener: ~p~n",[Reason]),
             {stop, socket_create_error}
     end.
+
+%% Helper function to poll the socket while reading Python's boot logs
+wait_for_connection(LSock, Port, Retries) when Retries > 0 ->
+    case gen_tcp:accept(LSock, 100) of
+        {ok, DataSocket} ->
+            {ok, DataSocket};
+        {error, timeout} ->
+            %% Check if Python printed an error or died while we were waiting
+            receive
+                {Port, {data, LogLine}} ->
+                    io:format("[PYTHON-BOOT] ~s", [LogLine]),
+                    wait_for_connection(LSock, Port, Retries - 1);
+                {Port, {exit_status, Status}} ->
+                    io:format("🔥 Python process died immediately with status ~p~n", [Status]),
+                    {error, python_crashed_on_boot}
+            after 0 ->
+                %% No logs, just keep waiting
+                wait_for_connection(LSock, Port, Retries - 1)
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end;
+wait_for_connection(_, _, 0) ->
+    {error, connection_timeout}.
 
 handle_call({request, Type, Payload}, From, State) ->
     ReqId = erlang:phash2(erlang:make_ref()),
