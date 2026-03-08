@@ -50,7 +50,7 @@ workers:
 
 upstream:
   app_path: "your_app:app" #Same as other servers
-  mode: "auto"
+  mode: "auto"  #wsgi, asgi or auto
 ```
 - Run the app with following command, omnicorn.yaml is your yaml config file
 ```bash
