@@ -2,27 +2,11 @@ import asyncio
 import sys
 import traceback
 
-# Store active WebSocket connections globally across the worker process
-# req_id -> { "task": Task, "receive_queue": Queue, "send_queue": Queue }
 WS_CONNECTIONS = {}
 
 class ASGIAdapter:
-    # We maintain a SINGLE persistent event loop per worker process
-    # so background WebSocket tasks stay alive between Erlang requests.
-    _loop = asyncio.new_event_loop()
-
     @staticmethod
-    def run_phase(app, msg_type, etf_payload):
-        try:
-            return ASGIAdapter._loop.run_until_complete(
-                ASGIAdapter._run_async(app, msg_type, etf_payload)
-            )
-        except Exception as e:
-            sys.stderr.write(f"ASGI run_phase error:\n{traceback.format_exc()}\n")
-            return {b'status': 500, b'body': b"Internal Server Error"}
-
-    @staticmethod
-    async def _run_async(app, msg_type, etf_payload):
+    async def run_phase(app, msg_type, etf_payload):
         if msg_type == b'http':
             return await ASGIAdapter._handle_http_request(app, etf_payload)
         elif msg_type == b'websocket_handshake':
@@ -48,6 +32,7 @@ class ASGIAdapter:
 
     @staticmethod
     async def _handle_http_request(app, etf_payload):
+        # (Same implementation as previous file, keep exactly as is)
         method = etf_payload.get(b'method', b'GET').decode('utf-8')
         path = etf_payload.get(b'path', b'/').decode('utf-8')
         query_string = etf_payload.get(b'query', b'').decode('utf-8')
@@ -58,30 +43,22 @@ class ASGIAdapter:
         body_bytes = etf_payload.get(b'body', b'')
 
         scope = {
-            'type': 'http',
-            'asgi': {'version': '3.0', 'spec_version': '2.1'},
-            'http_version': '1.1',
-            'method': method,
-            'scheme': scheme,
-            'path': path,
-            'raw_path': path.encode('latin-1'),
+            'type': 'http', 'asgi': {'version': '3.0', 'spec_version': '2.1'},
+            'http_version': '1.1', 'method': method, 'scheme': scheme,
+            'path': path, 'raw_path': path.encode('latin-1'),
             'query_string': query_string.encode('latin-1'),
-            'headers': req_headers_asgi,
-            'server': ('omnicorn', port),
-            'client': ('127.0.0.1', 0),
+            'headers': req_headers_asgi, 'server': ('omnicorn', port), 'client': ('127.0.0.1', 0),
         }
 
         response_state = {'status': 500, 'headers': {}, 'body': b''}
         input_queue = asyncio.Queue()
         input_queue.put_nowait({'type': 'http.request', 'body': body_bytes, 'more_body': False})
 
-        async def receive_http():
-            return await input_queue.get()
-
+        async def receive_http(): return await input_queue.get()
         async def send_http(message):
             if message['type'] == 'http.response.start':
                 response_state['status'] = message['status']
-                for k_bytes, v_bytes in message.get('headers', []):
+                for k_bytes, v_bytes in message.get('headers',[]):
                     response_state['headers'][k_bytes] = v_bytes
             elif message['type'] == 'http.response.body':
                 response_state['body'] += message.get('body', b'')
@@ -93,11 +70,7 @@ class ASGIAdapter:
             response_state['status'] = 500
             response_state['body'] = b"Internal Server Error: HTTP"
 
-        return {
-            b'status': response_state['status'],
-            b'headers': response_state['headers'],
-            b'body': response_state['body']
-        }
+        return {b'status': response_state['status'], b'headers': response_state['headers'], b'body': response_state['body']}
 
     @staticmethod
     async def _handle_websocket_handshake(app, etf_payload):
@@ -109,44 +82,29 @@ class ASGIAdapter:
         req_headers_asgi = ASGIAdapter._parse_headers(etf_payload)
 
         scope = {
-            'type': 'websocket',
-            'asgi': {'version': '3.0', 'spec_version': '2.1'},
-            'http_version': '1.1',
-            'scheme': scheme,
-            'path': path,
-            'raw_path': path.encode('latin-1'),
-            'query_string': query_string.encode('latin-1'),
-            'headers': req_headers_asgi,
-            'server': ('omnicorn', port),
-            'client': ('127.0.0.1', 0),
-            'subprotocols':[],
-            'state': {},
+            'type': 'websocket', 'asgi': {'version': '3.0', 'spec_version': '2.1'},
+            'http_version': '1.1', 'scheme': scheme, 'path': path, 'raw_path': path.encode('latin-1'),
+            'query_string': query_string.encode('latin-1'), 'headers': req_headers_asgi,
+            'server': ('omnicorn', port), 'client': ('127.0.0.1', 0), 'subprotocols':[], 'state': {},
         }
 
         receive_queue = asyncio.Queue()
         send_queue = asyncio.Queue()
-
-        # Prime the connection with the initial event
         receive_queue.put_nowait({'type': 'websocket.connect'})
 
-        WS_CONNECTIONS[req_id] = {
-            'receive_queue': receive_queue,
-            'send_queue': send_queue
-        }
+        WS_CONNECTIONS[req_id] = {'receive_queue': receive_queue, 'send_queue': send_queue}
 
-        # 🚀 SPAWN APP IN BACKGROUND
-        task = ASGIAdapter._loop.create_task(app(scope, receive_queue.get, send_queue.put))
+        # Spawn the ASGI App in the background!
+        task = asyncio.create_task(app(scope, receive_queue.get, send_queue.put))
         WS_CONNECTIONS[req_id]['task'] = task
 
         try:
-            # Wait up to 3 seconds for the app to issue an accept/close
             response_event = await asyncio.wait_for(send_queue.get(), timeout=3.0)
         except asyncio.TimeoutError:
             return {b'websocket_handshake': b'error', b'code': 1001, b'reason': b"Handshake timeout"}
 
         if response_event.get('type') == 'websocket.accept':
-            subprotocol = response_event.get('subprotocol', b'')
-            return {b'websocket_handshake': b'accept', b'subprotocol': subprotocol}
+            return {b'websocket_handshake': b'accept', b'subprotocol': response_event.get('subprotocol', b'')}
         elif response_event.get('type') == 'websocket.close':
             return {b'websocket_handshake': b'close', b'code': response_event.get('code', 1000)}
         else:
@@ -156,24 +114,19 @@ class ASGIAdapter:
     async def _handle_websocket_message(app, etf_payload):
         req_id = etf_payload.get(b'id', 0)
         conn = WS_CONNECTIONS.get(req_id)
-
-        if not conn:
-            return {b'websocket_message_response':[], b'connection_state': {}}
+        if not conn: return {b'websocket_message_response':[], b'connection_state': {}}
 
         msg_type = etf_payload.get(b'message_type')
         content = etf_payload.get(b'content')
 
-        # Push incoming data to the background task
         if msg_type == b'text':
             conn['receive_queue'].put_nowait({'type': 'websocket.receive', 'text': content.decode('utf-8')})
         elif msg_type == b'binary':
             conn['receive_queue'].put_nowait({'type': 'websocket.receive', 'bytes': content})
 
-        # ✨ MAGIC TRICK: Yield to the event loop so the background task gets CPU time
-        # to process the message we just put in the queue!
-        await asyncio.sleep(0.01)
+        # Because worker is fully async, this NO LONGER blocks the worker!
+        await asyncio.sleep(0.005)
 
-        # Collect any responses the app generated during that split-second
         erlang_responses = []
         while not conn['send_queue'].empty():
             msg = conn['send_queue'].get_nowait()
@@ -193,7 +146,5 @@ class ASGIAdapter:
         conn = WS_CONNECTIONS.get(req_id)
         if conn:
             conn['receive_queue'].put_nowait({'type': 'websocket.disconnect', 'code': etf_payload.get(b'code', 1000)})
-            await asyncio.sleep(0.01) # Give it time to run cleanup
             del WS_CONNECTIONS[req_id]
-
         return {b'websocket_disconnect_response': b'ok'}

@@ -26,13 +26,12 @@ def main(app_path, config, workers, port):
     env = os.environ.copy()
     env.update({
         'OMNICORN_APP': conf['upstream']['app_path'],
+        'OMNICORN_MODE': conf['upstream']['mode'], # Pass mode to Python worker
         'OMNICORN_PORT': str(conf['server']['port']),
         'OMNICORN_WORKERS': str(conf['workers']['count']),
         'OMNICORN_TIMEOUT': str(conf['workers']['timeout']),
-        # NEW: Pass Resilience Settings
         'OMNICORN_MAX_RESTARTS': str(conf['workers']['max_restarts']),
         'OMNICORN_RESTART_PERIOD': str(conf['workers']['restart_period']),
-        # NEW: Parse socket address
         'OMNICORN_SOCK': str(conf['server']["socket"]),
         'PYTHONPATH': os.getcwd() + os.pathsep + env.get('PYTHONPATH', '')
     })
