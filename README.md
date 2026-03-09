@@ -57,7 +57,7 @@ upstream:
 omnicorn --config omnicorn.yaml
 ```
 
-- This currently has few wrappers. View __init__.py for them. (let_it_crash and task)
+- This currently has few wrappers. View `__init__.py` for them. (let_it_crash and task)
 
 - Also note that the execution time maybe higher than other servers, for me it didn't show any noticable differences (for now)
 
