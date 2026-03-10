@@ -50,3 +50,17 @@ async def execute_workflow_step(msg: dict, transport):
                 b"error": str(e).encode("utf-8"),
             }
         )
+
+
+async def start_workflow(name: str, workflow_id: str, init_data: dict = None):
+    """Triggers an Erlang Workflow Actor from Python."""
+    from ..cache import _rpc_call
+
+    return await _rpc_call(
+        b"workflow_start",
+        {
+            b"name": name.encode("utf-8"),
+            b"workflow_id": workflow_id.encode("utf-8"),
+            b"data": erlpack.pack(init_data or {}),
+        },
+    )
