@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "omnicorn"
-version = "1.0.0"
-description = "Erlang/OTP Process Supervisor for Python WSGI/ASGI Applications"
+version = "2.0.0"
+description = "Erlang/OTP Distributed Application Server & Temporal Alternative"
 readme = "README.md"
 requires-python = ">=3.8"
-dependencies = [
+dependencies =[
     "click",
     "pyyaml",
-    "erlpack",
+    "erlpack"
 ]
 
 [project.scripts]

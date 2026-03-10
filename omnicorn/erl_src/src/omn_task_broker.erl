@@ -1,53 +1,22 @@
 -module(omn_task_broker).
 -behaviour(gen_server).
--export([start_link/0, enqueue/1, register_worker/1]).
--export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
+-export([start_link/0, enqueue/1, ack/1, fail/2]).
+-export([init/1, handle_cast/2, handle_info/2]).
 
--record(state, {
-    workers =[] %% List of active Python UDS sockets
-}).
+start_link() -> gen_server:start_link({local, ?MODULE}, ?MODULE, [],[]).
+enqueue(Payload) -> gen_server:cast(?MODULE, {enq, Payload}).
+ack(Id) -> gen_server:cast(?MODULE, {ack, Id}).
+fail(Id, Err) -> gen_server:cast(?MODULE, {fail, Id, Err}).
 
-start_link() ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, [],[]).
+init([]) -> {ok, #{}}.
 
-register_worker(WorkerPid) ->
-    gen_server:cast(?MODULE, {register, WorkerPid}).
-
-enqueue(Payload) ->
-    gen_server:cast(?MODULE, {enqueue, Payload}).
-
-init([]) ->
-    %% On boot, load any un-acked persistent tasks from Mnesia and re-queue them!
-    %% (Implementation omitted for brevity, but this is where crash recovery happens)
-    {ok, #state{}}.
-
-handle_cast({register, WorkerPid}, State) ->
-    %% Add worker to our multiplex pool
-    {noreply, State#state{workers = [WorkerPid | State#state.workers]}};
-
-handle_cast({enqueue, Payload}, State) ->
-    IsPersistent = maps:get(<<"persistent">>, Payload, false),
-    TaskId = erlang:system_time(microsecond),
-
-    %% 1. Store the task
-    if
-        IsPersistent ->
-            TaskRec = {omn_persistent_tasks, TaskId, maps:get(<<"name">>, Payload), Payload, maps:get(<<"retries">>, Payload, 3)},
-            mnesia:dirty_write(TaskRec);
-        true ->
-            ets:insert(omnicorn_volatile_tasks, {TaskId, Payload})
-    end,
-
-    %% 2. Route to a random Python worker via Multiplexing
-    %% Because Python is Asyncio, this will NOT block the worker's HTTP traffic!
-    case State#state.workers of[] -> ok; %% Will be picked up when a worker boots
-        Workers ->
-            RandomWorker = lists:nth(rand:uniform(length(Workers)), Workers),
-            TaskMessage = Payload#{<<"task_id">> => TaskId},
-            omn_worker:send_async_task(RandomWorker, TaskMessage)
-    end,
-
-    {noreply, State}.
-
-handle_call(_, _, State) -> {reply, ok, State}.
-handle_info(_, State) -> {noreply, State}.
+handle_cast({enq, Payload}, S) ->
+    Id = erlang:system_time(microsecond),
+    mnesia:dirty_write({omn_activities, Id, maps:get(<<"name">>, Payload), Payload, 3}),
+    case omn_router:checkout_worker() of
+        {ok, W} -> omn_worker:send_async(W, #{<<"type">> => <<"activity_execute">>, <<"payload">> => Payload#{<<"activity_id">> => Id}});
+        _ -> ok
+    end, {noreply, S};
+handle_cast({ack, Id}, S) -> mnesia:dirty_delete(omn_activities, Id), {noreply, S};
+handle_cast({fail, Id, Err}, S) -> io:format("Activity ~p failed: ~p~n", [Id, Err]), {noreply, S}.
+handle_info(_, S) -> {noreply, S}.

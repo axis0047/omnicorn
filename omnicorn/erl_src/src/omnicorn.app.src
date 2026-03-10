@@ -1,15 +1,9 @@
-{application, omnicorn,
- [{description, "Omnicorn: Python execution inside Erlang Supervision"},
-  {vsn, "1.0.0"},
+{application, omnicorn,[
+  {description, "Omnicorn OTP Application Server"},
+  {vsn, "2.0.0"},
   {registered, []},
   {mod, {omnicorn_app, []}},
-  {applications,
-   [kernel,
-    stdlib,
-    cowboy
-   ]},
-  {env,[]},
-  {modules, []},
-  {licenses, ["Apache 2.0"]},
-  {links, []}
- ]}.
+  {applications,[kernel, stdlib, cowboy, mnesia]},
+  {env, []},
+  {modules,[]}
+]}.
