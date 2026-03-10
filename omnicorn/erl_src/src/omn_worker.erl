@@ -155,6 +155,30 @@ handle_info({tcp, _Socket, Data}, State) ->
                             gen_tcp:send(State#state.data_socket, Packet),
                             {noreply, State};
 
+                        <<"task_enqueue">> ->
+                            Payload = maps:get(<<"payload">>, Decoded),
+                            ReqId = maps:get(<<"id">>, Decoded),
+                            %% Forward the payload to our Erlang Broker
+                            omn_task_broker:enqueue(Payload),
+                            %% Tell Python the defer() was successful
+                            Packet = term_to_binary(#{<<"id">> => ReqId, <<"type">> => <<"ets_reply">>, <<"data">> => <<"queued">>}),
+                            gen_tcp:send(State#state.data_socket, Packet),
+                            {noreply, State};
+
+                        <<"task_ack">> ->
+                            TaskId = maps:get(<<"task_id">>, Decoded),
+                            %% Delete the task from Mnesia/ETS because it succeeded!
+                            mnesia:dirty_delete(omn_persistent_tasks, TaskId),
+                            ets:delete(omnicorn_volatile_tasks, TaskId),
+                            {noreply, State};
+
+                        <<"task_fail">> ->
+                            TaskId = maps:get(<<"task_id">>, Decoded),
+                            Error = maps:get(<<"error">>, Decoded),
+                            io:format("⚠️ Task ~p failed: ~p~n", [TaskId, Error]),
+                            %% Here you would decrement retries in Mnesia and re-queue
+                            {noreply, State};
+
                         <<"ets_delete">> ->
                             Payload = maps:get(<<"payload">>, Decoded),
                             Key = maps:get(<<"key">>, Payload),
