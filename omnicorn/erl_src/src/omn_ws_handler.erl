@@ -5,7 +5,15 @@
 
 init(Req, _Opts) ->
     ReqId = erlang:phash2(erlang:make_ref()),
-    Payload = #{<<"id">> => ReqId, <<"path">> => cowboy_req:path(Req), <<"headers">> => cowboy_req:headers(Req)},
+    %% FIX: Pass query and port to Python so FastAPI WS doesn't crash
+    Payload = #{
+        <<"id">> => ReqId,
+        <<"path">> => cowboy_req:path(Req),
+        <<"query">> => cowboy_req:qs(Req),
+        <<"port">> => cowboy_req:port(Req),
+        <<"scheme">> => cowboy_req:scheme(Req),
+        <<"headers">> => cowboy_req:headers(Req)
+    },
     case omn_router:checkout_worker() of
         {ok, Pid} ->
             case omn_worker:call_python(Pid, <<"websocket_handshake">>, Payload) of
@@ -36,8 +44,6 @@ forward(Type, Data, S) ->
         <<"message_type">> => Type,
         <<"content">> => Data
     }),
-
-    %% FIX: Replaced illegal 'if' guard with a valid 'case' statement inside the list comprehension
     Actions =[
         case maps:get(<<"type">>, M) of
             <<"send_text">> -> {text, maps:get(<<"content">>, M)};

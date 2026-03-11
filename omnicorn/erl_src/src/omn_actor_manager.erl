@@ -9,6 +9,16 @@ checkpoint_ack(WfId, NextStep, SleepMs, Data) -> gen_server:cast(?MODULE, {chk, 
 
 init([]) ->
     ets:new(active_actors,[named_table, public, set]),
+
+    %% 🔥 RESURRECTION LOGIC: Load all suspended workflows from disk on boot
+    %% Dirty match reads all records in the omn_sagas table
+    PendingSagas = mnesia:dirty_match_object({omn_sagas, '_', '_', '_', '_'}),
+    lists:foreach(fun({omn_sagas, Id, Name, Step, Data}) ->
+        %% Spawn a new Actor for every saved workflow!
+        {ok, Pid} = supervisor:start_child(omn_workflow_actor_sup,[Id, Name, Step, Data]),
+        ets:insert(active_actors, {Id, Pid})
+    end, PendingSagas),
+
     {ok, #{}}.
 
 handle_cast({start_wf, Id, Name, InitData}, State) ->

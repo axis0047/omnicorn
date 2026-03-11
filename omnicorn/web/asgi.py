@@ -33,6 +33,7 @@ class ASGIAdapter:
 
     @staticmethod
     async def _handle_http_request(app, p):
+        # FIX: Added required ASGI keys: raw_path, query_string, server, client
         scope = {
             "type": "http",
             "asgi": {"version": "3.0"},
@@ -40,7 +41,11 @@ class ASGIAdapter:
             "method": p.get(b"method", b"GET").decode("utf-8"),
             "scheme": p.get(b"scheme", b"http").decode("utf-8"),
             "path": p.get(b"path", b"/").decode("utf-8"),
+            "raw_path": p.get(b"path", b"/"),
+            "query_string": p.get(b"query", b""),
             "headers": ASGIAdapter._parse_headers(p),
+            "server": ("127.0.0.1", int(p.get(b"port", 80))),
+            "client": ("127.0.0.1", 0),
         }
         res = {"status": 500, "headers": {}, "body": b""}
         q = asyncio.Queue()
@@ -57,7 +62,8 @@ class ASGIAdapter:
         try:
             await app(scope, q.get, send)
         except Exception:
-            sys.stderr.write(f"ASGI Error: {traceback.format_exc()}\n")
+            sys.stderr.write(f"ASGI HTTP Error: {traceback.format_exc()}\n")
+
         return {
             b"status": res["status"],
             b"headers": res["headers"],
@@ -67,11 +73,19 @@ class ASGIAdapter:
     @staticmethod
     async def _handle_websocket_handshake(app, p):
         req_id = p.get(b"id")
+        # FIX: Added required ASGI WS keys
         scope = {
             "type": "websocket",
             "asgi": {"version": "3.0"},
+            "scheme": p.get(b"scheme", b"ws").decode("utf-8"),
             "path": p.get(b"path", b"/").decode("utf-8"),
+            "raw_path": p.get(b"path", b"/"),
+            "query_string": p.get(b"query", b""),
             "headers": ASGIAdapter._parse_headers(p),
+            "server": ("127.0.0.1", int(p.get(b"port", 80))),
+            "client": ("127.0.0.1", 0),
+            "subprotocols": [],
+            "state": {},
         }
         rq, sq = asyncio.Queue(), asyncio.Queue()
         rq.put_nowait({"type": "websocket.connect"})
@@ -86,6 +100,7 @@ class ASGIAdapter:
                 return {b"websocket_handshake": b"accept"}
             return {b"websocket_handshake": b"close"}
         except Exception:
+            sys.stderr.write(f"ASGI WS Error: {traceback.format_exc()}\n")
             return {b"websocket_handshake": b"error"}
 
     @staticmethod
