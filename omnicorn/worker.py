@@ -90,12 +90,19 @@ class OmniWorker:
                     if msg_type == b"http"
                     else {b"status": 500, b"body": b"WSGI non-HTTP error"}
                 )
-            await self.transport.send({b"id": req_id, b"data": resp})
+
+            # 🔥 Only send a reply if it's an HTTP/Handshake cycle
+            if resp is not None:
+                await self.transport.send({b"id": req_id, b"data": resp})
         except Exception as e:
             sys.stderr.write(f"Web Error: {traceback.format_exc()}\n")
-            await self.transport.send(
-                {b"id": req_id, b"data": {b"status": 500, b"body": b"Internal Error"}}
-            )
+            if req_id:
+                await self.transport.send(
+                    {
+                        b"id": req_id,
+                        b"data": {b"status": 500, b"body": b"Internal Error"},
+                    }
+                )
 
     def run(self):
         asyncio.run(self.async_run())

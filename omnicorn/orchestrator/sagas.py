@@ -1,8 +1,6 @@
 import sys
 import traceback
 
-import erlpack
-
 from .context import Context
 
 ORCHESTRATOR_REGISTRY = {}
@@ -18,13 +16,29 @@ def orchestrator(name: str):
     return decorator
 
 
+async def start_workflow(name: str, workflow_id: str, init_data: dict = None):
+    """Triggers an Erlang Workflow Actor from Python."""
+    from ..cache import _rpc_call
+
+    return await _rpc_call(
+        b"workflow_start",
+        {
+            b"name": name.encode("utf-8"),
+            b"workflow_id": workflow_id.encode("utf-8"),
+            b"data": init_data or {},  # REMOVED double-packing!
+        },
+    )
+
+
 async def execute_workflow_step(msg: dict, transport):
     """Called by worker.py when an Erlang Actor resumes a saga."""
     payload = msg.get(b"payload", {})
     w_name = payload.get(b"name")
     w_id = payload.get(b"workflow_id")
     step = payload.get(b"step")
-    data = erlpack.unpack(payload.get(b"data", b"")) if payload.get(b"data") else {}
+
+    # Data is already natively unpacked by the Transport boundary!
+    data = payload.get(b"data", {})
 
     func = ORCHESTRATOR_REGISTRY.get(w_name)
     if not func:
@@ -42,7 +56,12 @@ async def execute_workflow_step(msg: dict, transport):
         cmd = await func(ctx)
         await transport.send(cmd)
     except Exception as e:
-        sys.stderr.write(f"Workflow {w_name} Error: {traceback.format_exc()}\n")
+        safe_name = (
+            w_name.decode("utf-8", "ignore")
+            if isinstance(w_name, bytes)
+            else str(w_name)
+        )
+        sys.stderr.write(f"Workflow {safe_name} Error: {traceback.format_exc()}\n")
         await transport.send(
             {
                 b"type": b"workflow_error",
@@ -50,17 +69,3 @@ async def execute_workflow_step(msg: dict, transport):
                 b"error": str(e).encode("utf-8"),
             }
         )
-
-
-async def start_workflow(name: str, workflow_id: str, init_data: dict = None):
-    """Triggers an Erlang Workflow Actor from Python."""
-    from ..cache import _rpc_call
-
-    return await _rpc_call(
-        b"workflow_start",
-        {
-            b"name": name.encode("utf-8"),
-            b"workflow_id": workflow_id.encode("utf-8"),
-            b"data": erlpack.pack(init_data or {}),
-        },
-    )

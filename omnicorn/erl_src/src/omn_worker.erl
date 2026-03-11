@@ -5,27 +5,24 @@
 
 -record(state, {log_port, data_socket, listener, path, id, reqs = #{}}).
 
-start_link(App, Id) ->
-    gen_server:start_link(?MODULE, [App, Id],[]).
+start_link(App, Id) -> gen_server:start_link(?MODULE, [App, Id],[]).
 
 call_python(Pid, Type, P) ->
     try gen_server:call(Pid, {req, Type, P}, 10000) of
         R -> {ok, R}
-    catch
-        _:_ -> {error, timeout}
+    catch _:_ -> {error, timeout}
     end.
 
-send_async(Pid, Msg) ->
-    gen_server:cast(Pid, {async, Msg}).
+send_async(Pid, Msg) -> gen_server:cast(Pid, {async, Msg}).
 
 init([App, Id]) ->
     process_flag(trap_exit, true),
-    Path = lists:flatten(io_lib:format("/tmp/omnicorn_~p_~p.sock", [os:getpid(), Id])),
+    Path = lists:flatten(io_lib:format("/tmp/omnicorn_~p_~p.sock",[os:getpid(), Id])),
     file:delete(Path),
     case gen_tcp:listen(0,[{ifaddr, {local, Path}}, {mode, binary}, {packet, 4}, {active, true}]) of
         {ok, LSock} ->
             Cmd = "python3 -m omnicorn.worker " ++ binary_to_list(App),
-            Port = open_port({spawn, Cmd},[binary, exit_status, use_stdio, stderr_to_stdout, {env, [{"OMNICORN_SOCK", Path}]}]),
+            Port = open_port({spawn, Cmd},[binary, exit_status, use_stdio, stderr_to_stdout, {env,[{"OMNICORN_SOCK", Path}]}]),
             case wait_conn(LSock, Port, 50) of
                 {ok, DS} -> {ok, #state{log_port=Port, data_socket=DS, listener=LSock, path=Path, id=Id}};
                 Err -> {stop, Err}
@@ -40,8 +37,7 @@ wait_conn(LSock, Port, R) when R > 0 ->
             receive
                 {Port, {data, L}} -> io:format("[PY-BOOT] ~s",[L]), wait_conn(LSock, Port, R-1);
                 {Port, {exit_status, _}} -> {error, died}
-            after 0 ->
-                wait_conn(LSock, Port, R-1)
+            after 0 -> wait_conn(LSock, Port, R-1)
             end
     end;
 wait_conn(_, _, 0) -> {error, timeout}.
@@ -50,14 +46,12 @@ handle_call({req, Type, P}, From, S) ->
     ReqId = erlang:phash2(erlang:make_ref()),
     gen_tcp:send(S#state.data_socket, term_to_binary(#{<<"id">> => ReqId, <<"type">> => Type, <<"payload">> => P})),
     {noreply, S#state{reqs = maps:put(ReqId, From, S#state.reqs)}};
-handle_call(_, _, S) ->
-    {reply, ok, S}.
+handle_call(_, _, S) -> {reply, ok, S}.
 
 handle_cast({async, Msg}, S) ->
     gen_tcp:send(S#state.data_socket, term_to_binary(Msg)),
     {noreply, S};
-handle_cast(_, S) ->
-    {noreply, S}.
+handle_cast(_, S) -> {noreply, S}.
 
 handle_info({tcp, _, Data}, S) ->
     try binary_to_term(Data) of
@@ -65,13 +59,20 @@ handle_info({tcp, _, Data}, S) ->
             case maps:get(<<"type">>, D, undefined) of
                 <<"ets_get">> ->
                     P = maps:get(<<"payload">>, D),
-                    V = case ets:lookup(omnicorn_cache, maps:get(<<"key">>, P)) of[{_, Val, 0}] -> Val;[] -> nil end,
+                    Key = maps:get(<<"key">>, P),
+                    %% 🔥 FIX: Match ALL possible tuple sizes safely so it never crashes!
+                    V = case ets:lookup(omnicorn_cache, Key) of
+                        [{_, Val, _TTL}] -> Val;
+                        [{_, Val}] -> Val;
+                        _ -> nil
+                    end,
                     gen_tcp:send(S#state.data_socket, term_to_binary(#{<<"id">> => maps:get(<<"id">>, D), <<"type">> => <<"ets_reply">>, <<"data">> => V})),
                     {noreply, S};
 
                 <<"ets_set">> ->
                     P = maps:get(<<"payload">>, D),
-                    ets:insert(omnicorn_cache, {maps:get(<<"key">>, P), maps:get(<<"value">>, P), maps:get(<<"ttl">>, P)}),
+                    %% Safely default TTL to 0 if missing
+                    ets:insert(omnicorn_cache, {maps:get(<<"key">>, P), maps:get(<<"value">>, P), maps:get(<<"ttl">>, P, 0)}),
                     gen_tcp:send(S#state.data_socket, term_to_binary(#{<<"id">> => maps:get(<<"id">>, D), <<"type">> => <<"ets_reply">>, <<"data">> => <<"ok">>})),
                     {noreply, S};
 
@@ -84,7 +85,8 @@ handle_info({tcp, _, Data}, S) ->
                     {noreply, S};
 
                 <<"activity_enqueue">> ->
-                    omn_task_broker:enqueue(maps:get(<<"payload">>, D)),
+                    P = maps:get(<<"payload">>, D),
+                    omn_task_broker:enqueue(P),
                     gen_tcp:send(S#state.data_socket, term_to_binary(#{<<"id">> => maps:get(<<"id">>, D), <<"type">> => <<"ets_reply">>, <<"data">> => <<"queued">>})),
                     {noreply, S};
 
@@ -106,6 +108,14 @@ handle_info({tcp, _, Data}, S) ->
                     omn_actor_manager:checkpoint_ack(maps:get(<<"workflow_id">>, D), maps:get(<<"next_step">>, D), maps:get(<<"sleep_ms">>, D), maps:get(<<"data">>, D)),
                     {noreply, S};
 
+                <<"websocket_push">> ->
+                    P = maps:get(<<"payload">>, D),
+                    ReqId = maps:get(<<"id">>, P),
+                    Actions = maps:get(<<"actions">>, P),
+                    %% Route the push using the ReqId
+                    omn_router:push_ws(ReqId, Actions),
+                    {noreply, S};
+
                 _ ->
                     case maps:get(<<"status">>, D, undefined) of
                         <<"ready">> ->
@@ -122,15 +132,16 @@ handle_info({tcp, _, Data}, S) ->
                             end
                     end
             end
-    catch _:_ -> {noreply, S} end;
+    catch
+        %% 🔥 FIX: Expose ALL internal crash reports so we never fly blind again!
+        Class:Reason:Stacktrace ->
+            io:format("🔥 CRITICAL ETF Decode Error: ~p:~p~n~p~n",[Class, Reason, Stacktrace]),
+            {noreply, S}
+    end;
 
-handle_info({Port, {data, L}}, S = #state{log_port=Port}) ->
-    io:format("[PY] ~s", [L]),
-    {noreply, S};
-handle_info({Port, {exit_status, _}}, S = #state{log_port=Port}) ->
-    {stop, died, S};
-handle_info(_, S) ->
-    {noreply, S}.
+handle_info({Port, {data, L}}, S = #state{log_port=Port}) -> io:format("[PY] ~s", [L]), {noreply, S};
+handle_info({Port, {exit_status, _}}, S = #state{log_port=Port}) -> {stop, died, S};
+handle_info(_, S) -> {noreply, S}.
 
 terminate(_Reason, State) ->
     catch gen_tcp:close(State#state.data_socket),
@@ -139,5 +150,4 @@ terminate(_Reason, State) ->
     catch port_close(State#state.log_port),
     ok.
 
-code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
+code_change(_OldVsn, State, _Extra) -> {ok, State}.

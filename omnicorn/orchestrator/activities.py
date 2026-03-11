@@ -2,8 +2,6 @@ import asyncio
 import sys
 import traceback
 
-import erlpack
-
 from ..cache import _rpc_call
 
 ACTIVITY_REGISTRY = {}
@@ -26,8 +24,8 @@ async def defer_activity(name: str, *args, **kwargs):
         b"activity_enqueue",
         {
             b"name": name.encode("utf-8"),
-            b"args": erlpack.pack(args),
-            b"kwargs": erlpack.pack(kwargs),
+            b"args": args,  # REMOVED double-packing!
+            b"kwargs": kwargs,  # REMOVED double-packing!
         },
     )
 
@@ -37,8 +35,9 @@ async def execute_activity(msg: dict, transport):
     a_name = payload.get(b"name")
     a_id = payload.get(b"activity_id")
 
-    args = erlpack.unpack(payload.get(b"args")) if b"args" in payload else ()
-    kwargs = erlpack.unpack(payload.get(b"kwargs")) if b"kwargs" in payload else {}
+    # Already natively unpacked by the Transport boundary!
+    args = payload.get(b"args", ())
+    kwargs = payload.get(b"kwargs", {})
 
     record = ACTIVITY_REGISTRY.get(a_name)
     if record:

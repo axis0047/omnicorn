@@ -11,11 +11,15 @@ class ASGIAdapter:
         if msg_type == b"http":
             return await ASGIAdapter._handle_http_request(app, etf_payload)
         elif msg_type == b"websocket_handshake":
-            return await ASGIAdapter._handle_websocket_handshake(app, etf_payload)
+            return await ASGIAdapter._handle_websocket_handshake(
+                app, etf_payload, transport
+            )
         elif msg_type == b"websocket_message":
-            return await ASGIAdapter._handle_websocket_message(app, etf_payload)
+            await ASGIAdapter._handle_websocket_message(app, etf_payload)
+            return None
         elif msg_type == b"websocket_disconnect":
-            return await ASGIAdapter._handle_websocket_disconnect(app, etf_payload)
+            await ASGIAdapter._handle_websocket_disconnect(app, etf_payload)
+            return None
 
     @staticmethod
     def _parse_headers(etf_payload):
@@ -33,7 +37,6 @@ class ASGIAdapter:
 
     @staticmethod
     async def _handle_http_request(app, p):
-        # FIX: Added required ASGI keys: raw_path, query_string, server, client
         scope = {
             "type": "http",
             "asgi": {"version": "3.0"},
@@ -71,9 +74,9 @@ class ASGIAdapter:
         }
 
     @staticmethod
-    async def _handle_websocket_handshake(app, p):
+    async def _handle_websocket_handshake(app, p, transport):
         req_id = p.get(b"id")
-        # FIX: Added required ASGI WS keys
+
         scope = {
             "type": "websocket",
             "asgi": {"version": "3.0"},
@@ -87,18 +90,47 @@ class ASGIAdapter:
             "subprotocols": [],
             "state": {},
         }
-        rq, sq = asyncio.Queue(), asyncio.Queue()
+
+        rq = asyncio.Queue()
+        sq = asyncio.Queue()
         rq.put_nowait({"type": "websocket.connect"})
-        WS_CONNECTIONS[req_id] = {
-            "rq": rq,
-            "sq": sq,
-            "task": asyncio.create_task(app(scope, rq.get, sq.put)),
-        }
+
+        WS_CONNECTIONS[req_id] = {"rq": rq}
+
+        async def send(msg):
+            if msg["type"] == "websocket.accept":
+                sq.put_nowait(msg)
+            elif msg["type"] == "websocket.send":
+                action = (
+                    {b"type": b"send_text", b"content": msg["text"].encode("utf-8")}
+                    if "text" in msg
+                    else {b"type": b"send_binary", b"content": msg["bytes"]}
+                )
+                # Use req_id instead of ws_pid
+                await transport.send(
+                    {
+                        b"type": b"websocket_push",
+                        b"payload": {b"id": req_id, b"actions": [action]},
+                    }
+                )
+            elif msg["type"] == "websocket.close":
+                sq.put_nowait(msg)
+                await transport.send(
+                    {
+                        b"type": b"websocket_push",
+                        b"payload": {b"id": req_id, b"actions": [{b"type": b"close"}]},
+                    }
+                )
+
+        WS_CONNECTIONS[req_id]["task"] = asyncio.create_task(app(scope, rq.get, send))
+
         try:
             msg = await asyncio.wait_for(sq.get(), 3.0)
-            if msg["type"] == "websocket.accept":
-                return {b"websocket_handshake": b"accept"}
-            return {b"websocket_handshake": b"close"}
+            return (
+                {b"websocket_handshake": b"accept"}
+                if msg["type"] == "websocket.accept"
+                else {b"websocket_handshake": b"close"}
+            )
         except Exception:
             sys.stderr.write(f"ASGI WS Error: {traceback.format_exc()}\n")
             return {b"websocket_handshake": b"error"}
@@ -107,27 +139,13 @@ class ASGIAdapter:
     async def _handle_websocket_message(app, p):
         req_id = p.get(b"id")
         c = WS_CONNECTIONS.get(req_id)
-        if not c:
-            return {b"websocket_message_response": []}
-        msg_type, content = p.get(b"message_type"), p.get(b"content")
-        c["rq"].put_nowait(
-            {"type": "websocket.receive", "text": content.decode("utf-8")}
-            if msg_type == b"text"
-            else {"type": "websocket.receive", "bytes": content}
-        )
-        await asyncio.sleep(0.005)  # Yield to ASGI Task
-        out = []
-        while not c["sq"].empty():
-            msg = c["sq"].get_nowait()
-            if msg["type"] == "websocket.send":
-                out.append(
-                    {b"type": b"send_text", b"content": msg["text"].encode("utf-8")}
-                    if "text" in msg
-                    else {b"type": b"send_binary", b"content": msg["bytes"]}
-                )
-            elif msg["type"] == "websocket.close":
-                out.append({b"type": b"close"})
-        return {b"websocket_message_response": out}
+        if c:
+            msg_type, content = p.get(b"message_type"), p.get(b"content")
+            c["rq"].put_nowait(
+                {"type": "websocket.receive", "text": content.decode("utf-8")}
+                if msg_type == b"text"
+                else {"type": "websocket.receive", "bytes": content}
+            )
 
     @staticmethod
     async def _handle_websocket_disconnect(app, p):
@@ -135,4 +153,3 @@ class ASGIAdapter:
         if req_id in WS_CONNECTIONS:
             WS_CONNECTIONS[req_id]["rq"].put_nowait({"type": "websocket.disconnect"})
             del WS_CONNECTIONS[req_id]
-        return {b"websocket_disconnect_response": b"ok"}
