@@ -101,12 +101,18 @@ class ASGIAdapter:
             if msg["type"] == "websocket.accept":
                 sq.put_nowait(msg)
             elif msg["type"] == "websocket.send":
-                action = (
-                    {b"type": b"send_text", b"content": msg["text"].encode("utf-8")}
-                    if "text" in msg
-                    else {b"type": b"send_binary", b"content": msg["bytes"]}
-                )
-                # Use req_id instead of ws_pid
+                # Safely guarantee we are sending bytes to Erlang Term Format
+                if "text" in msg and msg["text"] is not None:
+                    action = {
+                        b"type": b"send_text",
+                        b"content": msg["text"].encode("utf-8"),
+                    }
+                else:
+                    action = {
+                        b"type": b"send_binary",
+                        b"content": msg.get("bytes", b""),
+                    }
+
                 await transport.send(
                     {
                         b"type": b"websocket_push",

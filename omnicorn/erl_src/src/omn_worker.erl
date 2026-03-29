@@ -92,10 +92,12 @@ handle_info({tcp, _, Data}, S) ->
 
                 <<"activity_ack">> ->
                     omn_task_broker:ack(maps:get(<<"activity_id">>, D)),
+                    omn_router:checkin_worker(self()),   %% 🔥 FIX: Return worker to pool
                     {noreply, S};
 
                 <<"activity_fail">> ->
                     omn_task_broker:fail(maps:get(<<"activity_id">>, D), maps:get(<<"error">>, D)),
+                    omn_router:checkin_worker(self()),   %% 🔥 FIX: Return worker to pool
                     {noreply, S};
 
                 <<"workflow_start">> ->
@@ -106,14 +108,25 @@ handle_info({tcp, _, Data}, S) ->
 
                 <<"workflow_checkpoint">> ->
                     omn_actor_manager:checkpoint_ack(maps:get(<<"workflow_id">>, D), maps:get(<<"next_step">>, D), maps:get(<<"sleep_ms">>, D), maps:get(<<"data">>, D)),
+                    omn_router:checkin_worker(self()),   %% 🔥 FIX: Return worker to pool
                     {noreply, S};
 
                 <<"websocket_push">> ->
                     P = maps:get(<<"payload">>, D),
                     ReqId = maps:get(<<"id">>, P),
                     Actions = maps:get(<<"actions">>, P),
-                    %% Route the push using the ReqId
-                    omn_router:push_ws(ReqId, Actions),
+                    %% 🔥 FIX: Direct synchronous ETS lookup. No dropped casts!
+                    case ets:lookup(omn_ws_registry, ReqId) of
+                        [{_, Pid}] ->
+                            io:format("[Erlang Worker] Push Match! Sending to WS Handler PID ~p~n", [Pid]),
+                            Pid ! {push, Actions};[] ->
+                            io:format("🔥 CRITICAL: WS Push Failed! ReqId ~p not found in Registry!~n", [ReqId])
+                    end,
+                    {noreply, S};
+
+                <<"workflow_error">> ->                  %% 🔥 FIX: Catch workflow exceptions
+                    io:format("⚠️ Python Workflow Error: ~p~n",[maps:get(<<"error">>, D)]),
+                    omn_router:checkin_worker(self()),
                     {noreply, S};
 
                 _ ->
