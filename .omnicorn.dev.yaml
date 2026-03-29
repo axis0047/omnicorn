@@ -1,0 +1,33 @@
+# Omnicorn Development Configuration
+# Copy this file and customize for your environment
+
+server:
+  port: 8080
+  socket: "127.0.0.1:8080"
+
+workers:
+  count: 2  # Use fewer workers for development
+  timeout: 30000  # 30 seconds
+
+upstream:
+  app_path: "examples.fastapi_app:app"
+  mode: "auto"  # auto, wsgi, or asgi
+
+cache:
+  max_entries: 1000
+  default_ttl_ms: 3600000  # 1 hour
+
+orchestrator:
+  max_concurrent_workflows: 10
+  activity_retry_count: 3
+  activity_retry_delay_ms: 5000
+
+logging:
+  level: "debug"  # debug, info, warning, error
+  format: "text"  # text or json
+
+# Cluster settings (experimental)
+cluster:
+  enabled: false
+  node_name: "omnicorn@127.0.0.1"
+  cookie: "omnicorn_dev_cookie"

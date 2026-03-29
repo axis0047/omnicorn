@@ -6,9 +6,8 @@
 init(Req, _Opts) ->
     ReqId = erlang:phash2(erlang:make_ref()),
 
-    %% 🔥 THE FIX: Register the WS connection BEFORE talking to Python.
-    %% This guarantees the ReqId exists in ETS before Python can possibly reply!
-    omn_router:register_ws(ReqId, self()),
+    %% Register immediately to prevent routing misses
+    ets:insert(omn_ws_registry, {ReqId, self()}),
 
     Payload = #{
         <<"id">> => ReqId,
@@ -27,39 +26,54 @@ init(Req, _Opts) ->
                         <<"accept">> ->
                             {cowboy_websocket, Req, #state{pid=Pid, req_id=ReqId}};
                         _ ->
-                            %% If rejected, clean up the registry
-                            omn_router:unregister_ws(ReqId),
+                            ets:delete(omn_ws_registry, ReqId),
                             {ok, cowboy_req:reply(403, Req), undefined}
                     end;
                 _ ->
-                    omn_router:unregister_ws(ReqId),
+                    ets:delete(omn_ws_registry, ReqId),
                     {ok, cowboy_req:reply(502, Req), undefined}
             end;
         _ ->
-            omn_router:unregister_ws(ReqId),
+            ets:delete(omn_ws_registry, ReqId),
             {ok, cowboy_req:reply(503, Req), undefined}
     end.
 
-websocket_init(State) -> {ok, State}.
+websocket_init(State) ->
+    io:format("[Erlang WS] Cowboy Loop Started. Sweeping mailbox for early frames...~n"),
+    %% 🔥 THE FIX: Manually sweep the mailbox for messages that arrived during the handshake
+    EarlyFrames = flush_pushes([]),
+    case EarlyFrames of[] ->
+            {ok, State};
+        _ ->
+            io:format("[Erlang WS] Flushed ~p early frames to client!~n",[length(EarlyFrames)]),
+            {reply, EarlyFrames, State}
+    end.
+
+%% Recursive Mailbox Sweeper
+flush_pushes(Acc) ->
+    receive
+        {push, ActionsMapList} ->
+            Frames = lists:filtermap(fun format_frame/1, ActionsMapList),
+            flush_pushes(Acc ++ Frames)
+    after 0 ->
+        Acc
+    end.
 
 websocket_handle({text, D}, S) -> forward(<<"text">>, D, S);
 websocket_handle({binary, D}, S) -> forward(<<"binary">>, D, S);
 websocket_handle(_Frame, S) -> {ok, S}.
 
 websocket_info({push, ActionsMapList}, S) ->
-    Actions =[
-        case maps:get(<<"type">>, M) of
-            <<"send_text">> -> {text, maps:get(<<"content">>, M)};
-            <<"send_binary">> -> {binary, maps:get(<<"content">>, M)};
-            <<"close">> -> close
-        end
-        || M <- ActionsMapList
-    ],
-    {Actions, S};
-websocket_info(_, S) -> {ok, S}.
+    Frames = lists:filtermap(fun format_frame/1, ActionsMapList),
+    case Frames of[] -> {ok, S};
+        [SingleFrame] -> {reply, SingleFrame, S};
+        MultipleFrames -> {reply, MultipleFrames, S}
+    end;
+websocket_info(_, S) ->
+    {ok, S}.
 
 websocket_terminate(_, _, S) ->
-    omn_router:unregister_ws(S#state.req_id),
+    ets:delete(omn_ws_registry, S#state.req_id),
     omn_worker:send_async(S#state.pid, #{
         <<"type">> => <<"websocket_disconnect">>,
         <<"payload">> => #{<<"id">> => S#state.req_id}
@@ -75,4 +89,13 @@ forward(Type, Data, S) ->
             <<"content">> => Data
         }
     }),
-    {[], S}.
+    {ok, S}.
+
+%% Helper to safely extract Python dicts into Cowboy frames
+format_frame(M) ->
+    case maps:get(<<"type">>, M, undefined) of
+        <<"send_text">> -> {true, {text, maps:get(<<"content">>, M, <<"">>)}};
+        <<"send_binary">> -> {true, {binary, maps:get(<<"content">>, M, <<>>)}};
+        <<"close">> -> {true, close};
+        _ -> false
+    end.

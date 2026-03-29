@@ -3,6 +3,7 @@ import sys
 import traceback
 
 from ..cache import _rpc_call
+from .context import _decode_bytes
 
 ACTIVITY_REGISTRY = {}
 
@@ -35,9 +36,9 @@ async def execute_activity(msg: dict, transport):
     a_name = payload.get(b"name")
     a_id = payload.get(b"activity_id")
 
-    # Already natively unpacked by the Transport boundary!
-    args = payload.get(b"args", ())
-    kwargs = payload.get(b"kwargs", {})
+    # 🔥 FIX: Decode args and kwargs so string variables are restored
+    args = _decode_bytes(payload.get(b"args", ()))
+    kwargs = _decode_bytes(payload.get(b"kwargs", {}))
 
     record = ACTIVITY_REGISTRY.get(a_name)
     if record:

@@ -1,30 +1,45 @@
+def _decode_bytes(obj):
+    """Recursively converts ETF bytes back to Python strings."""
+    if isinstance(obj, bytes):
+        return obj.decode("utf-8")
+    elif isinstance(obj, dict):
+        return {_decode_bytes(k): _decode_bytes(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_decode_bytes(x) for x in obj]
+    elif isinstance(obj, tuple):
+        return tuple(_decode_bytes(x) for x in obj)
+    return obj
+
+
 class Context:
-    """Deterministic snapshot passed to workflow functions from Erlang."""
-
     def __init__(self, workflow_id, step, state_data):
-        # 🔥 FIX: Auto-decode Erlang binaries back into standard Python strings
-        self.workflow_id = (
-            workflow_id.decode("utf-8")
-            if isinstance(workflow_id, bytes)
-            else workflow_id
-        )
-        self.step = step.decode("utf-8") if isinstance(step, bytes) else step
-        self.data = state_data if state_data else {}
+        self.workflow_id = _decode_bytes(workflow_id)
+        self.step = _decode_bytes(step)
 
-    def checkpoint(self, next_step: str, sleep_ms: int = 0):
-        """Instructs Erlang to snapshot Mnesia state and optionally hibernate."""
+        # 🔥 FIX: Decode ETF dictionaries so users can use string keys
+        self.data = _decode_bytes(state_data) if state_data else {}
+
+    # 🔥 FIX: Added days/seconds support to match your Markdown spec
+    def checkpoint(
+        self,
+        next_step: str,
+        sleep_ms: int = 0,
+        sleep_seconds: int = 0,
+        sleep_days: int = 0,
+    ):
+        total_sleep_ms = sleep_ms + (sleep_seconds * 1000) + (sleep_days * 86400000)
+
         return {
             b"type": b"workflow_checkpoint",
-            # Auto-encode back to bytes for Erlang transmission
             b"workflow_id": self.workflow_id.encode("utf-8")
             if isinstance(self.workflow_id, str)
             else self.workflow_id,
             b"next_step": next_step.encode("utf-8")
             if isinstance(next_step, str)
             else next_step,
-            b"sleep_ms": sleep_ms,
+            b"sleep_ms": total_sleep_ms,
             b"data": self.data,
         }
 
     def finish(self):
-        return self.checkpoint("__finished__", 0)
+        return self.checkpoint("__finished__")
