@@ -50,6 +50,8 @@ handle_call(_, _, S) -> {reply, ok, S}.
 
 handle_cast({async, Msg}, S) ->
     gen_tcp:send(S#state.data_socket, term_to_binary(Msg)),
+    %% Start timeout monitor for async operations
+    erlang:send_after(60000, self(), {async_timeout, Msg}),
     {noreply, S};
 handle_cast(_, S) -> {noreply, S}.
 
@@ -205,13 +207,24 @@ handle_info({Port, {data, L}}, S = #state{log_port=Port}) ->
     io:format("[PY] ~s", [L]), {noreply, S};
 handle_info({Port, {exit_status, _}}, S = #state{log_port=Port}) ->
     {stop, died, S};
+handle_info({async_timeout, Msg}, S) ->
+    %% Log async operation timeout (worker didn't respond in 60s)
+    io:format("⚠️ Async operation timeout: ~p~n", [maps:get(<<"type">>, Msg, undefined)]),
+    {noreply, S};
 handle_info(_, S) -> {noreply, S}.
 
-terminate(_Reason, State) ->
+terminate(Reason, State = #state{path=Path, log_port=Port}) ->
+    io:format("🔧 Worker terminating: ~p~n", [Reason]),
+    
+    %% Remove from router pool
+    catch omn_router:checkin_worker(self()),
+    
+    %% Clean up socket
     catch gen_tcp:close(State#state.data_socket),
     catch gen_tcp:close(State#state.listener),
-    catch file:delete(State#state.path),
-    catch port_close(State#state.log_port),
+    catch file:delete(Path),
+    catch port_close(Port),
+    
     ok.
 
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
