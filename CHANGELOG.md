@@ -75,6 +75,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TTL now properly enforced - expired entries automatically removed
 - Improved documentation with usage examples
 
+### Added (Phase 5 - Multi-Node Support - Experimental)
+- Basic clustering support via omn_cluster module
+- Static node discovery method
+- Distributed Mnesia table configuration
+- Cluster status API via omn_cluster:status/0
+- Cluster join/leave API
+- Environment variable configuration:
+  - OMNICORN_NODE - Node name (default: omnicorn@127.0.0.1)
+  - OMNICORN_COOKIE - Shared cookie (default: omnicorn_dev_cookie)
+  - OMNICORN_CLUSTER_ENABLED - Enable clustering (default: false)
+- Cluster configuration example file (cluster.example.yaml)
+
+### Changed (Phase 5 - Multi-Node Support)
+- Mnesia tables now support distributed replicas
+- Cluster module integrated into supervisor tree
+
+### Usage (Phase 5 - Experimental)
+
+Start node 1:
+```bash
+OMNICORN_NODE=omnicorn@192.168.1.10 \
+OMNICORN_COOKIE=secret123 \
+OMNICORN_CLUSTER_ENABLED=true \
+omnicorn myapp:app --config cluster.yaml
+```
+
+Start node 2 and join cluster:
+```bash
+OMNICORN_NODE=omnicorn@192.168.1.11 \
+OMNICORN_COOKIE=secret123 \
+OMNICORN_CLUSTER_ENABLED=true \
+omnicorn myapp:app --config cluster.yaml
+
+# From Erlang shell on node 2:
+omn_cluster:join(["omnicorn@192.168.1.10"]).
+```
+
+Check cluster status:
+```erlang
+omn_cluster:status().
+omn_cluster:connected_nodes().
+```
+
 ## [0.0.0] - 2024-XX-XX
 
 ### Added
