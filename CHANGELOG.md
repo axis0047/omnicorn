@@ -61,6 +61,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Better state persistence and recovery
 - Cleaner state transitions with hibernation support
 
+### Added (Phase 4 - Cache API Cleanup)
+- Comprehensive type hints for all cache functions
+- Custom exceptions: CacheError, CacheConnectionError, CacheNotInitializedError
+- Cache stats API via cache.stats()
+- Automatic TTL enforcement with background cleanup process
+- Cleanup runs every 60 seconds to remove expired entries
+- Better error messages with context
+
+### Changed (Phase 4 - Cache API Cleanup)
+- Cache API now returns proper types with type hints
+- Value serialization handled entirely by Erlang (no user-side encoding)
+- TTL now properly enforced - expired entries automatically removed
+- Improved documentation with usage examples
+
 ## [0.0.0] - 2024-XX-XX
 
 ### Added
