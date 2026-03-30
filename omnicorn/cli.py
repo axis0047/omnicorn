@@ -4,6 +4,7 @@ import sys
 
 import click
 
+# from . import __version__ #import fails
 from .config import ConfigLoader
 
 
@@ -16,17 +17,17 @@ from .config import ConfigLoader
 def main(app_path, config, host, port, workers):
     """
     Omnicorn - Erlang/OTP Distributed Application Server
-    
+
     Run a WSGI/ASGI application with Omnicorn.
-    
+
     Examples:
-    
+
         omnicorn myapp:app
         omnicorn myapp:app --config omnicorn.yaml
         omnicorn myapp:app --workers 4 --port 8000
     """
     conf = ConfigLoader.load(config)
-    
+
     # Override config with command line options
     if app_path:
         conf["upstream"]["app_path"] = app_path
@@ -62,19 +63,15 @@ def main(app_path, config, host, port, workers):
         erl_src_dir, "_build", "default", "rel", "omnicorn", "bin", "omnicorn"
     )
 
-    click.echo(f"\n🦄 Omnicorn v{__version__}")
-    click.echo(f"{'='*50}")
+    # click.echo(f"\n🦄 Omnicorn v{__version__}")
+    click.echo(f"{'=' * 50}")
     click.echo(f"🐍 App:       {conf['upstream']['app_path']} [{conf['upstream']['mode']}]")
     click.echo(f"🚀 Workers:   {conf['workers']['count']}")
     click.echo(f"🌐 Port:      {conf['server']['port']}")
-    click.echo(f"{'='*50}\n")
+    click.echo(f"{'=' * 50}\n")
 
-    cmd = (
-        [release_bin, "foreground"]
-        if os.path.exists(release_bin)
-        else ["rebar3", "shell"]
-    )
-    
+    cmd = [release_bin, "foreground"] if os.path.exists(release_bin) else ["rebar3", "shell"]
+
     try:
         subprocess.run(cmd, env=env, cwd=erl_src_dir)
     except KeyboardInterrupt:
