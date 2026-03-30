@@ -1,8 +1,7 @@
 -module(omn_router_tests).
 -include_lib("eunit/include/eunit.hrl").
 
-%% Test imports
--include("omn_router.hrl").
+%% Note: omn_router doesn't use a .hrl file, all exports are in the module
 
 %%====================================================================
 %% Worker Pool Tests

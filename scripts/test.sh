@@ -22,11 +22,22 @@ ERLANG_PASS=true
 echo -e "\n${YELLOW}Running Python tests...${NC}"
 if command -v pytest &> /dev/null; then
     cd "$PROJECT_ROOT"
-    if pytest tests/ -v --cov=omnicorn --cov-report=term-missing; then
-        echo -e "  ${GREEN}✓ Python tests passed${NC}"
+    # Check if pytest-cov is installed
+    if python3 -c "import pytest_cov" 2>/dev/null; then
+        if pytest tests/ -v --cov=omnicorn --cov-report=term-missing; then
+            echo -e "  ${GREEN}✓ Python tests passed${NC}"
+        else
+            echo -e "  ${RED}✗ Python tests failed${NC}"
+            PYTHON_PASS=false
+        fi
     else
-        echo -e "  ${RED}✗ Python tests failed${NC}"
-        PYTHON_PASS=false
+        # Run without coverage
+        if pytest tests/ -v; then
+            echo -e "  ${GREEN}✓ Python tests passed${NC}"
+        else
+            echo -e "  ${RED}✗ Python tests failed${NC}"
+            PYTHON_PASS=false
+        fi
     fi
 else
     echo -e "  ${YELLOW}⚠ pytest not found, skipping Python tests${NC}"
