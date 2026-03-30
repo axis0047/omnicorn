@@ -49,6 +49,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **HIGH**: WebSocket handshake timeout (asgi.py)
   - Increased from 3s to 30s for slow networks/heavy load
   - Added specific timeout error handling
+- **FIXED**: Cowboy router dispatch configuration (omnicorn_app.erl)
+  - Fixed route tuple structure for proper compilation
+
+### Added (Phase 3 - gen_statem Migration)
+- Workflow orchestration migrated from gen_server to gen_statem
+- Proper state machine semantics for workflow lifecycle
+- Two states: waiting_for_worker and suspended
+- Built-in workflow cancellation support via cancel_workflow/1
+- Workflow listing API via get_workflows/0
+- Better state persistence and recovery
+- Cleaner state transitions with hibernation support
 
 ## [0.0.0] - 2024-XX-XX
 
