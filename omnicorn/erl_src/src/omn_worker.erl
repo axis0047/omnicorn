@@ -116,6 +116,15 @@ handle_info({tcp, _, Data}, S) ->
                     })),
                     {noreply, S};
 
+                <<"ets_stats">> ->
+                    Size = ets:info(omnicorn_cache, size),
+                    gen_tcp:send(S#state.data_socket, term_to_binary(#{
+                        <<"id">> => maps:get(<<"id">>, D),
+                        <<"type">> => <<"ets_reply">>,
+                        <<"data">> => #{<<"size">> => Size}
+                    })),
+                    {noreply, S};
+
                 <<"activity_enqueue">> ->
                     P = maps:get(<<"payload">>, D),
                     omn_task_broker:enqueue(P),
