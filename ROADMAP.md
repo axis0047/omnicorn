@@ -5,13 +5,15 @@ This document outlines the development roadmap for Omnicorn.
 ## Version 1.0 (Stable Release) - Target: Q2 2025
 
 ### Phase 0: Foundation (Current)
+
 - [x] Branch strategy setup
-- [ ] Project structure reorganization
-- [ ] Build and test infrastructure
-- [ ] CI/CD pipeline
-- [ ] Development documentation
+- [x] Project structure reorganization
+- [x] Build and test infrastructure
+- [x] CI/CD pipeline
+- [x] Development documentation
 
 ### Phase 1: Critical Bug Fixes
+
 - [ ] Worker pool deadlock prevention
 - [ ] Activity retry logic with DLQ
 - [ ] Workflow race condition fixes
@@ -21,6 +23,7 @@ This document outlines the development roadmap for Omnicorn.
 - [ ] Worker check-in on errors
 
 ### Phase 2: High Severity Fixes
+
 - [ ] Safe Mnesia boot sequence
 - [ ] Async operation timeouts
 - [ ] Worker exit cleanup
@@ -28,24 +31,28 @@ This document outlines the development roadmap for Omnicorn.
 - [ ] Worker pool backpressure
 
 ### Phase 3: gen_statem Migration
+
 - [ ] Workflow state machine implementation
 - [ ] State persistence improvements
 - [ ] Better error state handling
 - [ ] Workflow cancellation support
 
 ### Phase 4: Cache API Cleanup
+
 - [ ] Remove user-side byte encoding
 - [ ] Add comprehensive type hints
 - [ ] Better error messages
 - [ ] TTL enforcement
 
 ### Phase 5: Multi-Node Support (Experimental)
+
 - [ ] Basic clustering
 - [ ] Distributed Mnesia tables
 - [ ] Node discovery (static)
 - [ ] Cross-node communication
 
 ### Phase 6: Testing & Documentation
+
 - [ ] Unit test coverage >70%
 - [ ] Integration tests
 - [ ] Load testing baseline
@@ -56,6 +63,7 @@ This document outlines the development roadmap for Omnicorn.
 ## Version 1.1 (Post-Stable) - Target: Q3 2025
 
 ### Planned Features
+
 - [ ] HTTPS/TLS termination
 - [ ] Admin dashboard
 - [ ] Prometheus metrics
@@ -66,6 +74,7 @@ This document outlines the development roadmap for Omnicorn.
 - [ ] Kubernetes operator
 
 ### Improvements
+
 - [ ] Performance optimization
 - [ ] Memory usage reduction
 - [ ] Better error reporting
@@ -74,6 +83,7 @@ This document outlines the development roadmap for Omnicorn.
 ## Version 2.0 (Future) - Target: 2026
 
 ### Vision
+
 - Production-ready clustering
 - Cloud-native deployment
 - Enterprise features
@@ -84,6 +94,7 @@ This document outlines the development roadmap for Omnicorn.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how to contribute.
 
 ### Priority Areas for Contributors
+
 1. Test coverage improvement
 2. Documentation
 3. Example applications
@@ -92,13 +103,13 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for how to contribute.
 
 ## Release Schedule
 
-| Version | Target Date | Status |
-|---------|-------------|--------|
+| Version | Target Date | Status         |
+| ------- | ----------- | -------------- |
 | 1.0.0   | Q2 2025     | In Development |
-| 1.0.1   | Q2 2025     | Planned |
-| 1.1.0   | Q3 2025     | Planned |
-| 2.0.0   | 2026        | Vision |
+| 1.0.1   | Q2 2025     | Planned        |
+| 1.1.0   | Q3 2025     | Planned        |
+| 2.0.0   | 2026        | Vision         |
 
 ---
 
-*Last updated: 2025-03-29*
+_Last updated: 2025-03-29_
