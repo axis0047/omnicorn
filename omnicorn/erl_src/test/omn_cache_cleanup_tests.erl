@@ -1,0 +1,264 @@
+-module(omn_cache_cleanup_tests).
+-include_lib("eunit/include/eunit.hrl").
+
+%% Test Suite: omn_cache_cleanup
+%% Coverage Target: 90%
+
+%% Initialize Mnesia before tests
+init_per_testcase(_Name, _Config) ->
+    omn_test_helper:setup_mnesia(),
+    [].
+
+end_per_testcase(_Name, _Config) ->
+    omn_test_helper:cleanup_mnesia(),
+    ok.
+
+%%====================================================================
+%% Cleanup Process Initialization Tests
+%%====================================================================
+
+cache_cleanup_start_test() ->
+    %% Test cache cleanup process starts correctly
+    {ok, Pid} = omn_cache_cleanup:start_link(),
+    ?assert(is_pid(Pid)),
+    timer:sleep(50),
+    
+    gen_server:stop(Pid).
+
+%%====================================================================
+%% TTL Enforcement Tests
+%%====================================================================
+
+cache_cleanup_removes_expired_test() ->
+    %% Test cleanup removes expired entries
+    {ok, Pid} = omn_cache_cleanup:start_link(),
+    timer:sleep(50),
+    
+    Now = erlang:system_time(millisecond),
+    
+    %% Insert expired entry (TTL in past)
+    ets:insert(omnicorn_cache, {<<"expired_key">>, <<"value">>, Now - 1000}),
+    
+    %% Insert non-expired entry (TTL in future)
+    ets:insert(omnicorn_cache, {<<"valid_key">>, <<"value">>, Now + 60000}),
+    
+    %% Trigger cleanup
+    omn_cache_cleanup:cleanup(),
+    timer:sleep(100),
+    
+    %% Verify expired entry removed
+    [] = ets:lookup(omnicorn_cache, <<"expired_key">>),
+    
+    %% Verify valid entry still exists
+    [{_, <<"value">>, _}] = ets:lookup(omnicorn_cache, <<"valid_key">>),
+    
+    %% Cleanup
+    ets:delete(omnicorn_cache, <<"valid_key">>),
+    gen_server:stop(Pid).
+
+cache_cleanup_respects_ttl_test() ->
+    %% Test cleanup respects TTL boundaries
+    {ok, Pid} = omn_cache_cleanup:start_link(),
+    timer:sleep(50),
+    
+    Now = erlang:system_time(millisecond),
+    
+    %% Insert entry expiring exactly now
+    ets:insert(omnicorn_cache, {<<"boundary_key">>, <<"value">>, Now}),
+    
+    %% Trigger cleanup
+    omn_cache_cleanup:cleanup(),
+    timer:sleep(100),
+    
+    %% Entry should be removed (TTL <= Now)
+    [] = ets:lookup(omnicorn_cache, <<"boundary_key">>),
+    
+    gen_server:stop(Pid).
+
+cache_cleanup_no_ttl_entries_test() ->
+    %% Test cleanup doesn't remove entries without TTL
+    {ok, Pid} = omn_cache_cleanup:start_link(),
+    timer:sleep(50),
+    
+    %% Insert entry with TTL = 0 (no expiry)
+    ets:insert(omnicorn_cache, {<<"persistent_key">>, <<"value">>, 0}),
+    
+    %% Trigger cleanup
+    omn_cache_cleanup:cleanup(),
+    timer:sleep(100),
+    
+    %% Entry should still exist
+    [{_, <<"value">>, 0}] = ets:lookup(omnicorn_cache, <<"persistent_key">>),
+    
+    %% Cleanup
+    ets:delete(omnicorn_cache, <<"persistent_key">>),
+    gen_server:stop(Pid).
+
+%%====================================================================
+%% Scheduled Cleanup Tests
+%%====================================================================
+
+cache_cleanup_scheduled_test() ->
+    %% Test cleanup runs on schedule
+    {ok, Pid} = omn_cache_cleanup:start_link(),
+    timer:sleep(50),
+    
+    Now = erlang:system_time(millisecond),
+    
+    %% Insert expired entry
+    ets:insert(omnicorn_cache, {<<"scheduled_expired">>, <<"value">>, Now - 1000}),
+    
+    %% Wait for scheduled cleanup (60 seconds is too long for test)
+    %% Manually trigger instead
+    omn_cache_cleanup:cleanup(),
+    timer:sleep(100),
+    
+    %% Verify cleanup ran
+    [] = ets:lookup(omnicorn_cache, <<"scheduled_expired">>),
+    
+    gen_server:stop(Pid).
+
+%%====================================================================
+%% Cleanup Logging Tests
+%%====================================================================
+
+cache_cleanup_logs_removals_test() ->
+    %% Test cleanup logs removed entries
+    {ok, Pid} = omn_cache_cleanup:start_link(),
+    timer:sleep(50),
+    
+    Now = erlang:system_time(millisecond),
+    
+    %% Insert multiple expired entries
+    [ets:insert(omnicorn_cache, {list_to_binary("expired_" ++ integer_to_list(N)), <<"value">>, Now - 1000})
+     || N <- lists:seq(1, 5)],
+    
+    %% Trigger cleanup
+    omn_cache_cleanup:cleanup(),
+    timer:sleep(100),
+    
+    %% Verify all removed (logging verified via logs)
+    lists:foreach(fun(N) ->
+        [] = ets:lookup(omnicorn_cache, list_to_binary("expired_" ++ integer_to_list(N)))
+    end, lists:seq(1, 5)),
+    
+    gen_server:stop(Pid).
+
+%%====================================================================
+%% Edge Cases Tests
+%%====================================================================
+
+cache_cleanup_empty_cache_test() ->
+    %% Test cleanup on empty cache
+    {ok, Pid} = omn_cache_cleanup:start_link(),
+    timer:sleep(50),
+    
+    %% Clear cache
+    ets:delete_all_objects(omnicorn_cache),
+    
+    %% Trigger cleanup
+    omn_cache_cleanup:cleanup(),
+    timer:sleep(100),
+    
+    %% Should not crash
+    ?assert(true),
+    
+    gen_server:stop(Pid).
+
+cache_cleanup_all_expired_test() ->
+    %% Test cleanup when all entries expired
+    {ok, Pid} = omn_cache_cleanup:start_link(),
+    timer:sleep(50),
+    
+    Now = erlang:system_time(millisecond),
+    
+    %% Insert all expired entries
+    [ets:insert(omnicorn_cache, {list_to_binary("all_expired_" ++ integer_to_list(N)), <<"value">>, Now - 1000})
+     || N <- lists:seq(1, 10)],
+    
+    %% Trigger cleanup
+    omn_cache_cleanup:cleanup(),
+    timer:sleep(100),
+    
+    %% Verify all removed
+    0 = ets:info(omnicorn_cache, size),
+    
+    gen_server:stop(Pid).
+
+cache_cleanup_all_valid_test() ->
+    %% Test cleanup when all entries valid
+    {ok, Pid} = omn_cache_cleanup:start_link(),
+    timer:sleep(50),
+    
+    Now = erlang:system_time(millisecond),
+    
+    %% Insert all valid entries
+    [ets:insert(omnicorn_cache, {list_to_binary("all_valid_" ++ integer_to_list(N)), <<"value">>, Now + 60000})
+     || N <- lists:seq(1, 10)],
+    
+    %% Trigger cleanup
+    omn_cache_cleanup:cleanup(),
+    timer:sleep(100),
+    
+    %% Verify all still exist
+    10 = ets:info(omnicorn_cache, size),
+    
+    %% Cleanup
+    ets:delete_all_objects(omnicorn_cache),
+    gen_server:stop(Pid).
+
+%%====================================================================
+%% Concurrency Tests
+%%====================================================================
+
+cache_cleanup_concurrent_operations_test() ->
+    %% Test cleanup during concurrent operations
+    {ok, Pid} = omn_cache_cleanup:start_link(),
+    timer:sleep(50),
+    
+    Now = erlang:system_time(millisecond),
+    
+    %% Insert mix of expired and valid entries
+    [ets:insert(omnicorn_cache, {list_to_binary("mixed_" ++ integer_to_list(N)), <<"value">>, 
+        case N rem 2 of
+            0 -> Now - 1000;  %% Expired
+            1 -> Now + 60000  %% Valid
+        end})
+     || N <- lists:seq(1, 20)],
+    
+    %% Trigger cleanup while adding more entries
+    omn_cache_cleanup:cleanup(),
+    
+    %% Add more entries during cleanup
+    [ets:insert(omnicorn_cache, {list_to_binary("new_" ++ integer_to_list(N)), <<"value">>, Now + 60000})
+     || N <- lists:seq(1, 5)],
+    
+    timer:sleep(200),
+    
+    %% Verify valid entries still exist
+    ValidCount = ets:foldl(fun({_, _, TTL}, Acc) when TTL > Now -> Acc + 1; (_, Acc) -> Acc end, 0, omnicorn_cache),
+    ?assert(ValidCount >= 10),  %% At least the 10 valid + 5 new
+    
+    %% Cleanup
+    ets:delete_all_objects(omnicorn_cache),
+    gen_server:stop(Pid).
+
+%%====================================================================
+%% Termination Tests
+%%====================================================================
+
+cache_cleanup_terminate_test() ->
+    %% Test cleanup process terminates cleanly
+    {ok, Pid} = omn_cache_cleanup:start_link(),
+    timer:sleep(50),
+    
+    %% Stop process
+    gen_server:stop(Pid),
+    timer:sleep(100),
+    
+    %% Should not crash
+    ?assert(true).
+
+%%====================================================================
+%% Helper Functions
+%%====================================================================

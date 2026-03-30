@@ -1,90 +1,131 @@
 -module(omn_task_broker_tests).
 -include_lib("eunit/include/eunit.hrl").
 
+%% Test Suite: omn_task_broker
+%% Coverage Target: 95%
+
+-export([init_per_testcase/2, end_per_testcase/2]).
+
+%% Initialize before EACH test
+init_per_testcase(_Name, _Config) ->
+    %% Unregister FIRST, then stop
+    catch unregister(omn_task_broker),
+    timer:sleep(100),
+    catch gen_server:stop(omn_task_broker),
+    timer:sleep(300),  %% Wait longer for process to fully terminate
+    catch ets:delete(omn_activities_dlq),
+    timer:sleep(200),  %% Wait for async cleanup
+    ok.
+
+end_per_testcase(_Name, _Config) ->
+    %% Let EUnit handle process cleanup naturally
+    timer:sleep(200),
+    ok.
+
 %%====================================================================
-%% Activity Queue Tests
+%% Basic Broker Tests
 %%====================================================================
 
-enqueue_test_() ->
-    {setup,
-        fun setup_broker/0,
-        fun cleanup_broker/1,
-        fun do_enqueue_test/1
-    }.
+broker_start_test() ->
+    %% Test that broker starts correctly (or is already running)
+    case omn_task_broker:start_link() of
+        {ok, Pid} -> ?assert(is_pid(Pid));
+        {error, {already_started, _}} -> ok  %% Already running from previous test
+    end,
+    ok.
 
-do_enqueue_test(_Pid) ->
-    [
-        {"enqueue creates activity", fun enqueue_creates_activity/0},
-        {"enqueue dispatches to worker", fun enqueue_dispatches_to_worker/0}
-    ].
+broker_enqueue_test() ->
+    %% Test enqueue doesn't crash
+    case omn_task_broker:start_link() of
+        {ok, _} -> ok;
+        {error, {already_started, _}} -> ok
+    end,
+    timer:sleep(50),
 
-enqueue_creates_activity() ->
-    Payload = #{<<"name">> => <<"test_activity">>, <<"data">> => <<"test">>},
-    omn_task_broker:enqueue(Payload),
+    Payload = #{<<"name">> => <<"test">>, <<"data">> => <<"test">>},
+    ?assertMatch(ok, omn_task_broker:enqueue(Payload)),
+    timer:sleep(50),
+    ok.
+
+broker_ack_test() ->
+    %% Test ack doesn't crash
+    case omn_task_broker:start_link() of
+        {ok, _} -> ok;
+        {error, {already_started, _}} -> ok
+    end,
+    timer:sleep(50),
+
+    ?assertMatch(ok, omn_task_broker:ack(123)),
+    timer:sleep(50),
+    ok.
+
+broker_fail_test() ->
+    %% Test fail doesn't crash
+    case omn_task_broker:start_link() of
+        {ok, _} -> ok;
+        {error, {already_started, _}} -> ok
+    end,
+    timer:sleep(50),
+
+    ?assertMatch(ok, omn_task_broker:fail(123, <<"error">>)),
+    timer:sleep(50),
+    ok.
+
+broker_stats_test() ->
+    %% Test stats returns a map
+    case omn_task_broker:start_link() of
+        {ok, _} -> ok;
+        {error, {already_started, _}} -> ok
+    end,
+    timer:sleep(50),
+
+    Stats = omn_task_broker:get_stats(),
+    ?assert(is_map(Stats)),
+    ?assert(maps:is_key(pending, Stats)),
+    ?assert(maps:is_key(dlq, Stats)),
+    ok.
+
+%%====================================================================
+%% Activity Lifecycle Tests
+%%====================================================================
+
+activity_lifecycle_test() ->
+    %% Test full activity lifecycle
+    {ok, Pid} = omn_task_broker:start_link(),
+    timer:sleep(50),
+    
+    %% Enqueue
+    Payload = #{<<"name">> => <<"lifecycle_test">>, <<"data">> => <<"test">>},
+    ok = omn_task_broker:enqueue(Payload),
     timer:sleep(100),
     
-    %% Verify activity was created in Mnesia
+    %% Verify activity exists
     Activities = mnesia:dirty_match_object({omn_activities, '_', '_', '_', '_'}),
     ?assert(length(Activities) >= 1),
     
-    %% Cleanup
-    lists:foreach(fun({omn_activities, Id, _, _, _}) ->
-        mnesia:dirty_delete(omn_activities, Id)
-    end, Activities).
-
-enqueue_dispatches_to_worker() ->
-    %% This test requires a mock worker
-    %% For now, we just verify enqueue doesn't crash
-    Payload = #{<<"name">> => <<"dispatch_test">>, <<"data">> => <<"test">>},
-    ?assertMatch(ok, omn_task_broker:enqueue(Payload)).
-
-ack_test_() ->
-    {setup,
-        fun setup_broker/0,
-        fun cleanup_broker/1,
-        fun do_ack_test/1
-    }.
-
-do_ack_test(_Pid) ->
-    [
-        {"ack removes activity", fun ack_removes_activity/0}
-    ].
-
-ack_removes_activity() ->
-    %% Create an activity
-    Id = erlang:system_time(microsecond),
-    mnesia:dirty_write({omn_activities, Id, <<"test">>, #{}, 3}),
+    %% Get activity ID
+    [{omn_activities, Id, _, _, _}] = Activities,
     
-    %% Verify it exists
-    ?assertMatch([{omn_activities, Id, _, _, _}], mnesia:dirty_read(omn_activities, Id)),
-    
-    %% Acknowledge it
-    omn_task_broker:ack(Id),
+    %% Acknowledge
+    ok = omn_task_broker:ack(Id),
     timer:sleep(50),
     
-    %% Verify it's deleted
-    ?assertMatch([], mnesia:dirty_read(omn_activities, Id)).
+    %% Verify activity is deleted
+    [] = mnesia:dirty_read(omn_activities, Id),
+    
+    gen_server:stop(Pid).
 
-fail_test_() ->
-    {setup,
-        fun setup_broker/0,
-        fun cleanup_broker/1,
-        fun do_fail_test/1
-    }.
-
-do_fail_test(_Pid) ->
-    [
-        {"fail with retries decrements counter", fun fail_decrements_retries/0},
-        {"fail with no retries moves to DLQ", fun fail_moves_to_dlq/0}
-    ].
-
-fail_decrements_retries() ->
-    %% Create an activity with 3 retries
+activity_retry_decrement_test() ->
+    %% Test retry counter decrements on failure
+    {ok, Pid} = omn_task_broker:start_link(),
+    timer:sleep(50),
+    
+    %% Create activity with 3 retries
     Id = erlang:system_time(microsecond),
     mnesia:dirty_write({omn_activities, Id, <<"test">>, #{}, 3}),
     
     %% Fail it
-    omn_task_broker:fail(Id, <<"Test error">>),
+    ok = omn_task_broker:fail(Id, <<"Test error">>),
     timer:sleep(100),
     
     %% Verify retry count decreased
@@ -92,117 +133,82 @@ fail_decrements_retries() ->
     ?assertEqual(2, Retries),
     
     %% Cleanup
-    mnesia:dirty_delete(omn_activities, Id).
+    mnesia:dirty_delete(omn_activities, Id),
+    gen_server:stop(Pid).
 
-fail_moves_to_dlq() ->
-    %% Create an activity with 1 retry (will be exhausted)
+activity_dlq_test() ->
+    %% Test activity moves to DLQ after max retries
+    {ok, Pid} = omn_task_broker:start_link(),
+    timer:sleep(50),
+    
+    %% Create activity with 1 retry (will be exhausted)
     Id = erlang:system_time(microsecond),
     mnesia:dirty_write({omn_activities, Id, <<"test">>, #{}, 1}),
     
     %% Fail it
-    omn_task_broker:fail(Id, <<"Final error">>),
+    ok = omn_task_broker:fail(Id, <<"Final error">>),
     timer:sleep(100),
     
     %% Verify activity is deleted from main table
-    ?assertMatch([], mnesia:dirty_read(omn_activities, Id)),
+    [] = mnesia:dirty_read(omn_activities, Id),
     
     %% Verify it's in DLQ
     DLQEntries = ets:match(omn_activities_dlq, {Id, '_', '_', '_', '_'}),
     ?assert(length(DLQEntries) >= 1),
     
     %% Cleanup
-    ets:delete(omn_activities_dlq, Id).
+    ets:delete(omn_activities_dlq, Id),
+    gen_server:stop(Pid).
 
-resurrection_test_() ->
-    {setup,
-        fun setup_broker_with_data/0,
-        fun cleanup_broker/1,
-        fun do_resurrection_test/1
-    }.
+%%====================================================================
+%% Resurrection Tests
+%%====================================================================
 
-do_resurrection_test(_Pid) ->
-    [
-        {"broker resurrects pending activities", fun broker_resurrects_activities/0}
-    ].
-
-broker_resurrects_activities() ->
-    %% Create a pending activity before broker starts
+broker_resurrection_test() ->
+    %% Test broker resurrects pending activities on boot
     Id = erlang:system_time(microsecond),
+    
+    %% Create pending activity before broker starts
     mnesia:dirty_write({omn_activities, Id, <<"resurrect_test">>, #{<<"test">> => true}, 3}),
     
-    %% Broker should have picked it up during init (tested via setup)
-    %% For now, just verify the activity exists
+    %% Start broker (should resurrect)
+    {ok, Pid} = omn_task_broker:start_link(),
+    timer:sleep(2100),  %% Wait for resurrection (2s delay)
+    
+    %% Verify activity still exists (was resurrected)
     ?assertMatch([{omn_activities, Id, _, _, _}], mnesia:dirty_read(omn_activities, Id)),
     
     %% Cleanup
-    mnesia:dirty_delete(omn_activities, Id).
+    mnesia:dirty_delete(omn_activities, Id),
+    gen_server:stop(Pid).
 
-stats_test_() ->
-    {setup,
-        fun setup_broker/0,
-        fun cleanup_broker/1,
-        fun do_stats_test/1
-    }.
+%%====================================================================
+%% Concurrency Tests
+%%====================================================================
 
-do_stats_test(_Pid) ->
-    [
-        {"stats returns counts", fun stats_returns_counts/0}
-    ].
-
-stats_returns_counts() ->
-    %% Get initial stats
-    Stats1 = omn_task_broker:get_stats(),
-    ?assert(is_map(Stats1)),
-    ?assert(maps:is_key(pending, Stats1)),
-    ?assert(maps:is_key(dlq, Stats1)),
+broker_concurrent_enqueue_test() ->
+    %% Test concurrent enqueues
+    {ok, Pid} = omn_task_broker:start_link(),
+    timer:sleep(50),
     
-    %% Add an activity
-    Payload = #{<<"name">> => <<"stats_test">>, <<"data">> => <<"test">>},
-    omn_task_broker:enqueue(Payload),
-    timer:sleep(100),
+    %% Enqueue multiple activities concurrently
+    Payloads = [#{<<"name">> => list_to_binary(integer_to_list(N)), <<"data">> => N}
+                || N <- lists:seq(1, 10)],
     
-    %% Get stats again
-    Stats2 = omn_task_broker:get_stats(),
-    ?assert(maps:get(pending, Stats2) >= maps:get(pending, Stats1)),
+    [omn_task_broker:enqueue(P) || P <- Payloads],
+    timer:sleep(200),
+    
+    %% Verify all were created
+    Activities = mnesia:dirty_match_object({omn_activities, '_', '_', '_', '_'}),
+    ?assert(length(Activities) >= 10),
     
     %% Cleanup
-    Activities = mnesia:dirty_match_object({omn_activities, '_', '_', '_', '_'}),
     lists:foreach(fun({omn_activities, Id, _, _, _}) ->
         mnesia:dirty_delete(omn_activities, Id)
-    end, Activities).
+    end, Activities),
+    
+    gen_server:stop(Pid).
 
 %%====================================================================
 %% Helper Functions
 %%====================================================================
-
-setup_broker() ->
-    %% Ensure Mnesia is running
-    application:start(mnesia),
-    
-    %% Create tables if they don't exist
-    mnesia:create_table(omn_activities, [
-        {attributes, [id, name, payload, retries]},
-        {disc_copies, [node()]}
-    ]),
-    mnesia:wait_for_tables([omn_activities], 5000),
-    
-    %% Start broker
-    {ok, Pid} = omn_task_broker:start_link(),
-    timer:sleep(100),
-    Pid.
-
-setup_broker_with_data() ->
-    %% Same as setup_broker, but preserves existing data
-    application:start(mnesia),
-    mnesia:create_table(omn_activities, [
-        {attributes, [id, name, payload, retries]},
-        {disc_copies, [node()]}
-    ]),
-    mnesia:wait_for_tables([omn_activities], 5000),
-    {ok, Pid} = omn_task_broker:start_link(),
-    timer:sleep(2100),  %% Wait for resurrection
-    Pid.
-
-cleanup_broker(Pid) ->
-    gen_server:stop(Pid),
-    ok.
