@@ -60,71 +60,118 @@ handle_info({tcp, _, Data}, S) ->
                 <<"ets_get">> ->
                     P = maps:get(<<"payload">>, D),
                     Key = maps:get(<<"key">>, P),
-                    %% 🔥 FIX: Match ALL possible tuple sizes safely so it never crashes!
                     V = case ets:lookup(omnicorn_cache, Key) of
                         [{_, Val, _TTL}] -> Val;
                         [{_, Val}] -> Val;
                         _ -> nil
                     end,
-                    gen_tcp:send(S#state.data_socket, term_to_binary(#{<<"id">> => maps:get(<<"id">>, D), <<"type">> => <<"ets_reply">>, <<"data">> => V})),
+                    gen_tcp:send(S#state.data_socket, term_to_binary(#{
+                        <<"id">> => maps:get(<<"id">>, D),
+                        <<"type">> => <<"ets_reply">>,
+                        <<"data">> => V
+                    })),
                     {noreply, S};
 
                 <<"ets_set">> ->
                     P = maps:get(<<"payload">>, D),
-                    %% Safely default TTL to 0 if missing
-                    ets:insert(omnicorn_cache, {maps:get(<<"key">>, P), maps:get(<<"value">>, P), maps:get(<<"ttl">>, P, 0)}),
-                    gen_tcp:send(S#state.data_socket, term_to_binary(#{<<"id">> => maps:get(<<"id">>, D), <<"type">> => <<"ets_reply">>, <<"data">> => <<"ok">>})),
+                    ets:insert(omnicorn_cache, {
+                        maps:get(<<"key">>, P),
+                        maps:get(<<"value">>, P),
+                        maps:get(<<"ttl">>, P, 0)
+                    }),
+                    gen_tcp:send(S#state.data_socket, term_to_binary(#{
+                        <<"id">> => maps:get(<<"id">>, D),
+                        <<"type">> => <<"ets_reply">>,
+                        <<"data">> => <<"ok">>
+                    })),
                     {noreply, S};
 
                 <<"ets_incr">> ->
                     P = maps:get(<<"payload">>, D),
                     Key = maps:get(<<"key">>, P),
                     Amount = maps:get(<<"amount">>, P, 1),
-                    NewVal = try ets:update_counter(omnicorn_cache, Key, {2, Amount}, {Key, 0, 0}) catch _:_ -> nil end,
-                    gen_tcp:send(S#state.data_socket, term_to_binary(#{<<"id">> => maps:get(<<"id">>, D), <<"type">> => <<"ets_reply">>, <<"data">> => NewVal})),
+                    NewVal = try
+                        ets:update_counter(omnicorn_cache, Key, {2, Amount}, {Key, 0, 0})
+                    catch _:_ -> nil end,
+                    gen_tcp:send(S#state.data_socket, term_to_binary(#{
+                        <<"id">> => maps:get(<<"id">>, D),
+                        <<"type">> => <<"ets_reply">>,
+                        <<"data">> => NewVal
+                    })),
+                    {noreply, S};
+
+                <<"ets_delete">> ->
+                    P = maps:get(<<"payload">>, D),
+                    Key = maps:get(<<"key">>, P),
+                    Result = case ets:delete(omnicorn_cache, Key) of
+                        true -> <<"ok">>;
+                        false -> <<"not_found">>
+                    end,
+                    gen_tcp:send(S#state.data_socket, term_to_binary(#{
+                        <<"id">> => maps:get(<<"id">>, D),
+                        <<"type">> => <<"ets_reply">>,
+                        <<"data">> => Result
+                    })),
                     {noreply, S};
 
                 <<"activity_enqueue">> ->
                     P = maps:get(<<"payload">>, D),
                     omn_task_broker:enqueue(P),
-                    gen_tcp:send(S#state.data_socket, term_to_binary(#{<<"id">> => maps:get(<<"id">>, D), <<"type">> => <<"ets_reply">>, <<"data">> => <<"queued">>})),
+                    gen_tcp:send(S#state.data_socket, term_to_binary(#{
+                        <<"id">> => maps:get(<<"id">>, D),
+                        <<"type">> => <<"ets_reply">>,
+                        <<"data">> => <<"queued">>
+                    })),
                     {noreply, S};
 
                 <<"activity_ack">> ->
                     omn_task_broker:ack(maps:get(<<"activity_id">>, D)),
-                    omn_router:checkin_worker(self()),   %% 🔥 FIX: Return worker to pool
+                    omn_router:checkin_worker(self()),
                     {noreply, S};
 
                 <<"activity_fail">> ->
                     omn_task_broker:fail(maps:get(<<"activity_id">>, D), maps:get(<<"error">>, D)),
-                    omn_router:checkin_worker(self()),   %% 🔥 FIX: Return worker to pool
+                    omn_router:checkin_worker(self()),
                     {noreply, S};
 
                 <<"workflow_start">> ->
                     P = maps:get(<<"payload">>, D),
-                    omn_actor_manager:start_workflow(maps:get(<<"workflow_id">>, P), maps:get(<<"name">>, P), maps:get(<<"data">>, P)),
-                    gen_tcp:send(S#state.data_socket, term_to_binary(#{<<"id">> => maps:get(<<"id">>, D), <<"type">> => <<"ets_reply">>, <<"data">> => <<"started">>})),
+                    omn_actor_manager:start_workflow(
+                        maps:get(<<"workflow_id">>, P),
+                        maps:get(<<"name">>, P),
+                        maps:get(<<"data">>, P)
+                    ),
+                    gen_tcp:send(S#state.data_socket, term_to_binary(#{
+                        <<"id">> => maps:get(<<"id">>, D),
+                        <<"type">> => <<"ets_reply">>,
+                        <<"data">> => <<"started">>
+                    })),
                     {noreply, S};
 
                 <<"workflow_checkpoint">> ->
-                    omn_actor_manager:checkpoint_ack(maps:get(<<"workflow_id">>, D), maps:get(<<"next_step">>, D), maps:get(<<"sleep_ms">>, D), maps:get(<<"data">>, D)),
-                    omn_router:checkin_worker(self()),   %% 🔥 FIX: Return worker to pool
+                    omn_actor_manager:checkpoint_ack(
+                        maps:get(<<"workflow_id">>, D),
+                        maps:get(<<"next_step">>, D),
+                        maps:get(<<"sleep_ms">>, D),
+                        maps:get(<<"data">>, D)
+                    ),
+                    omn_router:checkin_worker(self()),
                     {noreply, S};
 
                 <<"websocket_push">> ->
                     P = maps:get(<<"payload">>, D),
                     ReqId = maps:get(<<"id">>, P),
                     Actions = maps:get(<<"actions">>, P),
-                    %% 🔥 FIX: Direct synchronous ETS lookup. No dropped casts!
                     case ets:lookup(omn_ws_registry, ReqId) of
                         [{_, Pid}] ->
                             io:format("[Erlang Worker] Push Match! Sending to WS Handler PID ~p~n", [Pid]),
-                            Pid ! {push, Actions};[] ->
+                            Pid ! {push, Actions};
+                        [] ->
                             io:format("🔥 CRITICAL: WS Push Failed! ReqId ~p not found in Registry!~n", [ReqId])
                     end,
                     {noreply, S};
 
-                <<"workflow_error">> ->                  %% 🔥 FIX: Catch workflow exceptions
+                <<"workflow_error">> ->
                     io:format("⚠️ Python Workflow Error: ~p~n",[maps:get(<<"error">>, D)]),
                     omn_router:checkin_worker(self()),
                     {noreply, S};
@@ -141,19 +188,23 @@ handle_info({tcp, _, Data}, S) ->
                                     omn_router:checkin_worker(self()),
                                     {noreply, S#state{reqs=NR}};
                                 error ->
+                                    %% 🔥 FIX: Always checkin worker even on error
+                                    omn_router:checkin_worker(self()),
+                                    io:format("⚠️ Unknown response for id ~p~n", [maps:get(<<"id">>, D)]),
                                     {noreply, S}
                             end
                     end
             end
     catch
-        %% 🔥 FIX: Expose ALL internal crash reports so we never fly blind again!
         Class:Reason:Stacktrace ->
             io:format("🔥 CRITICAL ETF Decode Error: ~p:~p~n~p~n",[Class, Reason, Stacktrace]),
             {noreply, S}
     end;
 
-handle_info({Port, {data, L}}, S = #state{log_port=Port}) -> io:format("[PY] ~s", [L]), {noreply, S};
-handle_info({Port, {exit_status, _}}, S = #state{log_port=Port}) -> {stop, died, S};
+handle_info({Port, {data, L}}, S = #state{log_port=Port}) ->
+    io:format("[PY] ~s", [L]), {noreply, S};
+handle_info({Port, {exit_status, _}}, S = #state{log_port=Port}) ->
+    {stop, died, S};
 handle_info(_, S) -> {noreply, S}.
 
 terminate(_Reason, State) ->

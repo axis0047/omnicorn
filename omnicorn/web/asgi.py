@@ -157,5 +157,16 @@ class ASGIAdapter:
     async def _handle_websocket_disconnect(app, p):
         req_id = p.get(b"id")
         if req_id in WS_CONNECTIONS:
-            WS_CONNECTIONS[req_id]["rq"].put_nowait({"type": "websocket.disconnect"})
+            conn = WS_CONNECTIONS[req_id]
+            # Signal disconnect to app
+            conn["rq"].put_nowait({"type": "websocket.disconnect"})
+            # Cancel and await the task to prevent leak
+            conn["task"].cancel()
+            try:
+                await conn["task"]
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                sys.stderr.write(f"WS cleanup error: {e}\n")
+            # Clean up registry
             del WS_CONNECTIONS[req_id]
