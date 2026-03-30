@@ -131,12 +131,16 @@ class ASGIAdapter:
         WS_CONNECTIONS[req_id]["task"] = asyncio.create_task(app(scope, rq.get, send))
 
         try:
-            msg = await asyncio.wait_for(sq.get(), 3.0)
+            # 🔥 FIX: Increased timeout from 3.0s to 30.0s for slow networks/heavy load
+            msg = await asyncio.wait_for(sq.get(), 30.0)
             return (
                 {b"websocket_handshake": b"accept"}
                 if msg["type"] == "websocket.accept"
                 else {b"websocket_handshake": b"close"}
             )
+        except asyncio.TimeoutError:
+            sys.stderr.write(f"ASGI WS Handshake Timeout: {req_id}\n")
+            return {b"websocket_handshake": b"timeout"}
         except Exception:
             sys.stderr.write(f"ASGI WS Error: {traceback.format_exc()}\n")
             return {b"websocket_handshake": b"error"}
