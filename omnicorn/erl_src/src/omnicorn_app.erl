@@ -20,7 +20,7 @@ start(_StartType, _StartArgs) ->
     %% Step 2: Start Mnesia
     application:start(mnesia),
     
-    %% Step 3: Ensure tables exist
+    %% Step 3: Ensure tables exist (with distributed support)
     ensure_tables(),
 
     %% Step 4: Wait for tables with configurable timeout

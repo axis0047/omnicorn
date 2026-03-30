@@ -31,6 +31,13 @@ init([WorkerCount, AppPath]) ->
         restart => permanent
     },
 
+    Cluster = #{
+        id => omn_cluster,
+        start => {omn_cluster, start_link, []},
+        type => worker,
+        restart => permanent
+    },
+
     WebSup = #{
         id => omn_web_sup,
         start => {omn_web_sup, start_link, [WorkerCount]},
@@ -50,4 +57,4 @@ init([WorkerCount, AppPath]) ->
         }
      || I <- lists:seq(1, WorkerCount)],
 
-    {ok, {SupFlags, [CacheCleanup, WebSup, OrchSup] ++ WorkerSpecs}}.
+    {ok, {SupFlags, [Cluster, CacheCleanup, WebSup, OrchSup] ++ WorkerSpecs}}.

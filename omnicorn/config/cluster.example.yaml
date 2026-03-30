@@ -1,0 +1,53 @@
+# Omnicorn Cluster Configuration Example
+# Copy this file to omnicorn.cluster.yaml and customize for your cluster
+
+server:
+  port: 8080
+  socket: "127.0.0.1:8080"
+
+workers:
+  count: 4
+  timeout: 30000
+
+upstream:
+  app_path: "myapp:app"
+  mode: "auto"
+
+# Cluster Configuration (Experimental)
+cluster:
+  enabled: true
+  
+  # This node's name (must be unique in cluster)
+  node_name: "omnicorn@192.168.1.10"
+  
+  # Shared cookie for authentication (must be same on all nodes)
+  cookie: "omnicorn_production_cookie"
+  
+  # Static node discovery - list of other nodes in cluster
+  discovery:
+    method: "static"
+    nodes:
+      - "omnicorn@192.168.1.11"
+      - "omnicorn@192.168.1.12"
+  
+  # Mnesia replication settings
+  mnesia:
+    # Number of replicas for tables
+    replicas: 2
+    # Sync strategy: sync or async
+    sync_strategy: "async"
+
+# Cache settings (per-node)
+cache:
+  max_entries: 10000
+  default_ttl_ms: 3600000
+
+# Orchestrator settings (shared across cluster via Mnesia)
+orchestrator:
+  max_concurrent_workflows: 100
+  activity_retry_count: 3
+  activity_retry_delay_ms: 5000
+
+logging:
+  level: "info"
+  format: "json"
