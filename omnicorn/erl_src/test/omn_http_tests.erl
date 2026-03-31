@@ -4,13 +4,16 @@
 %% Test Suite: omn_http
 %% Coverage Target: 90%
 
-%% Initialize Mnesia before tests
+-export([init_per_testcase/2, end_per_testcase/2]).
+
+%% Initialize before EACH test
 init_per_testcase(_Name, _Config) ->
-    omn_test_helper:setup_mnesia(),
-    [].
+    catch unregister(omn_http),
+    timer:sleep(50),
+    ok.
 
 end_per_testcase(_Name, _Config) ->
-    omn_test_helper:cleanup_mnesia(),
+    timer:sleep(50),
     ok.
 
 %%====================================================================
