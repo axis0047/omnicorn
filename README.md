@@ -10,8 +10,18 @@ where the chaos lie...*
 
 ---
 
+## 🚀 Features
+
+- **WSGI + ASGI Support** - Run Flask, Django, FastAPI, and any Python web framework
+- **Erlang/OTP Reliability** - Fault-tolerant supervision trees and process isolation
+- **Distributed Cache** - High-performance ETS-backed caching with TTL support
+- **Workflow Orchestration** - Temporal-like durable workflows with state persistence
+- **Background Activities** - Retryable background tasks with dead-letter queue
+- **WebSocket Support** - Full-duplex real-time communication
+- **Multi-Node Clustering** - Experimental distributed deployment (v1.0+)
+
 ---
-#Notice
+## Notice
 
 This project has a lot of AI generated code, I am currently reading and documenting them my self, latter part of this README.md is also AI generated. How I built this was incrementally improving my minimal implementation of this idea with AI. So my original code is basically now extinct from current version, like some old wood from Thesius's ship. I myself dislike the idea of using AI to create project beyond some minimal prototype, but given the limited time and limites skills, I used AI till this stage. It's better to have working slop instead of having non functional elegance. But before stable release, I will read and review every line, unit and will risk my projects to test this. Writting AI code is pretty frtustating BTW. But AI writes better code than me. damn shame
 
