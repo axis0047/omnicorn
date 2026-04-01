@@ -1,20 +1,32 @@
-# Omnicorn
-
-## 🗿🌽 ඔම්නිකෝර්න් - The Universal Corn That Controls Everything
-
-**A production-grade, distributed Python application server powered by Erlang/OTP**
+# omnicorn
+*One corn to rule them all,  
+One corn to find them all,  
+One corn to bring them all  
+and in the darkness bind them  
+In the land of Scale  
+where the chaos lie...*
+### 🗿🌽 ඔම්නිකෝර්න් - සියල්ල පාලනය කරන තනි ඉරිඟුව
+(Don't ask me to change this. I won't)
 
 ---
 
-## 🚀 Features
+---
+#Notice
 
-- **WSGI + ASGI Support** - Run Flask, Django, FastAPI, and any Python web framework
-- **Erlang/OTP Reliability** - Fault-tolerant supervision trees and process isolation
-- **Distributed Cache** - High-performance ETS-backed caching with TTL support
-- **Workflow Orchestration** - Temporal-like durable workflows with state persistence
-- **Background Activities** - Retryable background tasks with dead-letter queue
-- **WebSocket Support** - Full-duplex real-time communication
-- **Multi-Node Clustering** - Experimental distributed deployment (v1.0+)
+This project has a lot of AI generated code, I am currently reading and documenting them my self, latter part of this README.md is also AI generated. How I built this was incrementally improving my minimal implementation of this idea with AI. So my original code is basically now extinct from current version, like some old wood from Thesius's ship. I myself dislike the idea of using AI to create project beyond some minimal prototype, but given the limited time and limites skills, I used AI till this stage. It's better to have working slop instead of having non functional elegance. But before stable release, I will read and review every line, unit and will risk my projects to test this. Writting AI code is pretty frtustating BTW. But AI writes better code than me. damn shame
+
+Even this is created to solve real pain point I encounter at my job, I consider this as a learning proejct basically. What is to learn from an AI generated project. basically I learnt nothing. I guess that how 2026 works. 
+
+---
+
+<b>Omnicorn is the lord of *corn</b>
+
+Omnicorn is an experimental(not very, a lot of people have probably done this, but i couldn't find anything like this) Python ASGI/WSGI webserver + toolkit that is written in erlang. The idea is treating each ASGI or WSGI worker as an erlang processes and supervising and managing them with OTP functionalities and tools. What this is trying to solve is unplanned chaos that a system encounters when coupled with large scale complex systems. Existing servers like Gunicorn, Uvicorn or uWSGI or even Hypercone is built for the performance and handling known runtime errors and scenarios, with try except or in similar manner. But in my opinion and experience they lack the stability when it comes to the issues that originated from chaos and randomness of large scale or high throughput systems. For example droping tcp connections or app fully crashing on unexpected high load or unplanned network latency that makes tasks to run out of sync and enter into a crashloop.
+
+On the other hand, Erlang/OTP is built exactly for handling those chaotic scenarios and be highly available and massively scalable.As they say, every cloud service is a bad and incomplete implementation of Erlang/OTP. Erlang/OTP is that good.Python may never achieve that level of scalability, but trying to borrow that super powers from erlang/OTP is an endeavour worth taking.
+
+This current implementation (dev/stable branch, currently default branch, will be changed in feature) is the a feature-full, yet unstable implementation of the previously discussed concept. This currently has WSGI and ASGI support (support that is enough to run an app).
+Websocket support, Basic idempotency caching, Background tasks, and task recovery (task storages to recover tasks, both volatile and persistent tasks). On top of those features, omnicorn tries to utilise Erlang/OTP supervision for instant recovery and high availability. (same as server support, these features are just still unstable and not fully tested) I tested this mainly with flask and fastapi it and worked okay. Please refer the below guide for installation and usage. 
 
 ---
 
