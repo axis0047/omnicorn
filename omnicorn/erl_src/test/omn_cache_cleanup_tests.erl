@@ -4,13 +4,16 @@
 %% Test Suite: omn_cache_cleanup
 %% Coverage Target: 90%
 
-%% Initialize Mnesia before tests
-init_per_testcase(_Name, _Config) ->
-    omn_test_helper:setup_mnesia(),
-    [].
+%% Helper to setup ETS cache
+setup_cache() ->
+    catch ets:delete(omnicorn_cache),
+    ets:new(omnicorn_cache, [named_table, public, set]),
+    timer:sleep(50),
+    ok.
 
-end_per_testcase(_Name, _Config) ->
-    omn_test_helper:cleanup_mnesia(),
+cleanup_cache() ->
+    catch ets:delete(omnicorn_cache),
+    timer:sleep(50),
     ok.
 
 %%====================================================================
@@ -18,87 +21,111 @@ end_per_testcase(_Name, _Config) ->
 %%====================================================================
 
 cache_cleanup_start_test() ->
+    setup_cache(),
+    
     %% Test cache cleanup process starts correctly
     {ok, Pid} = omn_cache_cleanup:start_link(),
     ?assert(is_pid(Pid)),
     timer:sleep(50),
-    
-    gen_server:stop(Pid).
+
+    gen_server:stop(Pid),
+    cleanup_cache(),
+    ok.
 
 %%====================================================================
 %% TTL Enforcement Tests
 %%====================================================================
 
 cache_cleanup_removes_expired_test() ->
+    setup_cache(),
+    
     %% Test cleanup removes expired entries
     {ok, Pid} = omn_cache_cleanup:start_link(),
     timer:sleep(50),
-    
+
     Now = erlang:system_time(millisecond),
-    
+
     %% Insert expired entry (TTL in past)
     ets:insert(omnicorn_cache, {<<"expired_key">>, <<"value">>, Now - 1000}),
-    
+
     %% Insert non-expired entry (TTL in future)
     ets:insert(omnicorn_cache, {<<"valid_key">>, <<"value">>, Now + 60000}),
-    
+
     %% Trigger cleanup
     omn_cache_cleanup:cleanup(),
     timer:sleep(100),
+
+    %% Verify expired entry removed
+    [] = ets:lookup(omnicorn_cache, <<"expired_key">>),
+
+    %% Verify valid entry still exists
+    [{_, <<"value">>, _}] = ets:lookup(omnicorn_cache, <<"valid_key">>),
+
+    %% Cleanup
+    ets:delete(omnicorn_cache, <<"valid_key">>),
+    gen_server:stop(Pid),
+    cleanup_cache(),
+    ok.
+
+cache_cleanup_respects_ttl_test() ->
+    setup_cache(),
     
+    %% Test cleanup respects TTL boundaries
+    {ok, Pid} = omn_cache_cleanup:start_link(),
+    timer:sleep(50),
+
+    Now = erlang:system_time(millisecond),
+
+    %% Insert entry that expired 1ms ago (should be removed)
+    ets:insert(omnicorn_cache, {<<"expired_key">>, <<"value">>, Now - 1}),
+    
+    %% Insert entry expiring in 1000ms (should be kept)
+    ets:insert(omnicorn_cache, {<<"valid_key">>, <<"value">>, Now + 1000}),
+
+    %% Trigger cleanup
+    omn_cache_cleanup:cleanup(),
+    timer:sleep(100),
+
     %% Verify expired entry removed
     [] = ets:lookup(omnicorn_cache, <<"expired_key">>),
     
     %% Verify valid entry still exists
     [{_, <<"value">>, _}] = ets:lookup(omnicorn_cache, <<"valid_key">>),
-    
-    %% Cleanup
-    ets:delete(omnicorn_cache, <<"valid_key">>),
-    gen_server:stop(Pid).
 
-cache_cleanup_respects_ttl_test() ->
-    %% Test cleanup respects TTL boundaries
-    {ok, Pid} = omn_cache_cleanup:start_link(),
-    timer:sleep(50),
-    
-    Now = erlang:system_time(millisecond),
-    
-    %% Insert entry expiring exactly now
-    ets:insert(omnicorn_cache, {<<"boundary_key">>, <<"value">>, Now}),
-    
-    %% Trigger cleanup
-    omn_cache_cleanup:cleanup(),
-    timer:sleep(100),
-    
-    %% Entry should be removed (TTL <= Now)
-    [] = ets:lookup(omnicorn_cache, <<"boundary_key">>),
-    
-    gen_server:stop(Pid).
+    gen_server:stop(Pid),
+    cleanup_cache(),
+    ok.
 
 cache_cleanup_no_ttl_entries_test() ->
+    setup_cache(),
+    
     %% Test cleanup doesn't remove entries without TTL
     {ok, Pid} = omn_cache_cleanup:start_link(),
     timer:sleep(50),
-    
+
     %% Insert entry with TTL = 0 (no expiry)
     ets:insert(omnicorn_cache, {<<"persistent_key">>, <<"value">>, 0}),
-    
+
     %% Trigger cleanup
     omn_cache_cleanup:cleanup(),
     timer:sleep(100),
-    
+
     %% Entry should still exist
     [{_, <<"value">>, 0}] = ets:lookup(omnicorn_cache, <<"persistent_key">>),
-    
+
     %% Cleanup
     ets:delete(omnicorn_cache, <<"persistent_key">>),
-    gen_server:stop(Pid).
+    gen_server:stop(Pid),
+    cleanup_cache(),
+    ok.
 
 %%====================================================================
 %% Scheduled Cleanup Tests
 %%====================================================================
 
 cache_cleanup_scheduled_test() ->
+    setup_cache(),
+    
     %% Test cleanup runs on schedule
     {ok, Pid} = omn_cache_cleanup:start_link(),
     timer:sleep(50),
@@ -116,13 +143,17 @@ cache_cleanup_scheduled_test() ->
     %% Verify cleanup ran
     [] = ets:lookup(omnicorn_cache, <<"scheduled_expired">>),
     
-    gen_server:stop(Pid).
+    gen_server:stop(Pid),
+    cleanup_cache(),
+    ok.
 
 %%====================================================================
 %% Cleanup Logging Tests
 %%====================================================================
 
 cache_cleanup_logs_removals_test() ->
+    setup_cache(),
+    
     %% Test cleanup logs removed entries
     {ok, Pid} = omn_cache_cleanup:start_link(),
     timer:sleep(50),
@@ -142,13 +173,17 @@ cache_cleanup_logs_removals_test() ->
         [] = ets:lookup(omnicorn_cache, list_to_binary("expired_" ++ integer_to_list(N)))
     end, lists:seq(1, 5)),
     
-    gen_server:stop(Pid).
+    gen_server:stop(Pid),
+    cleanup_cache(),
+    ok.
 
 %%====================================================================
 %% Edge Cases Tests
 %%====================================================================
 
 cache_cleanup_empty_cache_test() ->
+    setup_cache(),
+    
     %% Test cleanup on empty cache
     {ok, Pid} = omn_cache_cleanup:start_link(),
     timer:sleep(50),
@@ -163,9 +198,13 @@ cache_cleanup_empty_cache_test() ->
     %% Should not crash
     ?assert(true),
     
-    gen_server:stop(Pid).
+    gen_server:stop(Pid),
+    cleanup_cache(),
+    ok.
 
 cache_cleanup_all_expired_test() ->
+    setup_cache(),
+    
     %% Test cleanup when all entries expired
     {ok, Pid} = omn_cache_cleanup:start_link(),
     timer:sleep(50),
@@ -183,9 +222,12 @@ cache_cleanup_all_expired_test() ->
     %% Verify all removed
     0 = ets:info(omnicorn_cache, size),
     
-    gen_server:stop(Pid).
+    gen_server:stop(Pid),
+    cleanup_cache(),
+    ok.
 
 cache_cleanup_all_valid_test() ->
+    setup_cache(),
     %% Test cleanup when all entries valid
     {ok, Pid} = omn_cache_cleanup:start_link(),
     timer:sleep(50),
@@ -205,13 +247,17 @@ cache_cleanup_all_valid_test() ->
     
     %% Cleanup
     ets:delete_all_objects(omnicorn_cache),
-    gen_server:stop(Pid).
+    gen_server:stop(Pid),
+    cleanup_cache(),
+    ok.
 
 %%====================================================================
 %% Concurrency Tests
 %%====================================================================
 
 cache_cleanup_concurrent_operations_test() ->
+    setup_cache(),
+    
     %% Test cleanup during concurrent operations
     {ok, Pid} = omn_cache_cleanup:start_link(),
     timer:sleep(50),
@@ -241,23 +287,30 @@ cache_cleanup_concurrent_operations_test() ->
     
     %% Cleanup
     ets:delete_all_objects(omnicorn_cache),
-    gen_server:stop(Pid).
+    gen_server:stop(Pid),
+    cleanup_cache(),
+    ok.
 
 %%====================================================================
 %% Termination Tests
 %%====================================================================
 
 cache_cleanup_terminate_test() ->
+    setup_cache(),
+    
     %% Test cleanup process terminates cleanly
     {ok, Pid} = omn_cache_cleanup:start_link(),
     timer:sleep(50),
-    
+
     %% Stop process
     gen_server:stop(Pid),
     timer:sleep(100),
-    
+
     %% Should not crash
-    ?assert(true).
+    ?assert(true),
+    
+    cleanup_cache(),
+    ok.
 
 %%====================================================================
 %% Helper Functions

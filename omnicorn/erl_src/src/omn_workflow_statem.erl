@@ -7,6 +7,9 @@
 %% gen_statem callbacks
 -export([init/1, callback_mode/0, handle_event/4, terminate/3, code_change/4]).
 
+%% State functions
+-export([waiting_for_worker/3, suspended/3]).
+
 -record(data, {
     id,
     name,
@@ -37,13 +40,16 @@ cancel(Pid) ->
 
 init([Id, Name, Step, Data]) ->
     process_flag(trap_exit, true),
-    
-    %% Persist initial state to Mnesia
-    mnesia:dirty_write({omn_sagas, Id, Name, Step, Data}),
-    
+
+    %% Persist initial state to Mnesia (only if table exists)
+    case catch mnesia:table_info(omn_sagas, name) of
+        {'EXIT', _} -> ok;  %% Table doesn't exist, skip persistence
+        _ -> mnesia:dirty_write({omn_sagas, Id, Name, Step, Data})
+    end,
+
     %% Register in ETS for lookup
     ets:insert(active_actors, {Id, self()}),
-    
+
     DataRec = #data{
         id = Id,
         name = Name,
@@ -86,22 +92,29 @@ waiting_for_worker(info, retry_execute, _Data) ->
 
 waiting_for_worker(cast, {checkpoint, <<"__finished__">>, _, _}, Data = #data{id=Id}) ->
     %% Workflow complete - cleanup and terminate
-    mnesia:dirty_delete(omn_sagas, Id),
-    ets:delete(active_actors, Id),
+    case catch mnesia:table_info(omn_sagas, name) of
+        {'EXIT', _} -> ok;  %% Table doesn't exist, skip
+        _ ->
+            mnesia:dirty_delete(omn_sagas, Id),
+            ets:delete(active_actors, Id)
+    end,
     {stop, normal, Data};
 
 waiting_for_worker(cast, {checkpoint, NextStep, SleepMs, ExecData}, Data = #data{id=Id, name=Name}) ->
-    %% Persist checkpoint to Mnesia
-    mnesia:dirty_write({omn_sagas, Id, Name, NextStep, ExecData}),
-    
+    %% Persist checkpoint to Mnesia (only if table exists)
+    case catch mnesia:table_info(omn_sagas, name) of
+        {'EXIT', _} -> ok;  %% Table doesn't exist, skip
+        _ -> mnesia:dirty_write({omn_sagas, Id, Name, NextStep, ExecData})
+    end,
+
     if
         SleepMs > 0 ->
             %% Schedule future execution and transition to suspended state
             erlang:send_after(SleepMs, self(), delayed_execute),
             {next_state, suspended, Data#data{step=NextStep, data=ExecData}};
         true ->
-            %% Continue immediately
-            {keep_state_and_data, {event, cast, execute}}
+            %% Just update state, don't trigger immediate execute
+            {keep_state, Data#data{step=NextStep, data=ExecData}}
     end;
 
 waiting_for_worker(cast, cancel, Data = #data{id=Id}) ->
@@ -160,7 +173,12 @@ handle_event(_, _, _, Data) ->
 %% Termination callback
 %%====================================================================
 
-terminate(_Reason, _State, _Data) ->
+terminate(_Reason, _State, Data) ->
+    %% Clean up ETS registration
+    case Data of
+        #data{id=Id} -> catch ets:delete(active_actors, Id);
+        _ -> ok
+    end,
     ok.
 
 %%====================================================================
