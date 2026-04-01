@@ -1,12 +1,11 @@
 """
-Tests for Omnicorn.
+Omnicorn Test Suite
 
-This directory contains all tests for the Omnicorn project:
-
-- test_cache.py - Cache API tests
-- test_activities.py - Activity orchestration tests
-- test_sagas.py - Workflow orchestration tests
-- test_asgi.py - ASGI adapter tests
-- test_wsgi.py - WSGI adapter tests
-- test_integration.py - End-to-end integration tests
+This package contains all tests for Omnicorn:
+- Python unit tests
+- Python integration tests
+- Python E2E tests
+- Erlang unit tests
+- Erlang integration tests
+- Load tests
 """

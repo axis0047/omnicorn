@@ -23,7 +23,16 @@ init([]) ->
     ets:new(active_actors, [named_table, public, set]),
 
     %% Resurrection Logic: Load all suspended workflows from disk on boot
-    PendingSagas = mnesia:dirty_match_object({omn_sagas, '_', '_', '_', '_'}),
+    %% Only resurrect if Mnesia table exists
+    PendingSagas = case catch mnesia:table_info(omn_sagas, name) of
+        {'EXIT', _} -> [];  %% Table doesn't exist, skip resurrection
+        _ ->
+            case catch mnesia:dirty_match_object({omn_sagas, '_', '_', '_', '_'}) of
+                {'EXIT', _} -> [];  %% Can't read table, skip
+                Sagas -> Sagas
+            end
+    end,
+    
     lists:foreach(fun({omn_sagas, Id, Name, Step, Data}) ->
         %% Spawn a new Actor for every saved workflow
         {ok, Pid} = supervisor:start_child(omn_workflow_actor_sup, [Id, Name, Step, Data]),
