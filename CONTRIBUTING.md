@@ -1,6 +1,6 @@
 # Contributing to Omnicorn
 
-Thank you for considering contributing to Omnicorn! This document outlines how to contribute to the project.
+Please do not contribute to this, Don't waste your time. There is nothing here
 
 ## Development Setup
 
